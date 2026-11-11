@@ -1,0 +1,8 @@
+# Proprietäre Acer-Software, Analyse-Datenbanken und Mitschnitte bleiben lokal
+re/acer-edisplay/installer/
+re/acer-edisplay/installed/
+re/acer-edisplay/captures/
+*.gpr
+*.rep/
+*.i64
+*.idb
