@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Beamer</title>
+<style>
+  :root {
+    --bg: #0e1014; --surface: #161920; --border: #2c313d; --text: #e7e9ee; --muted: #98a1b0;
+    --accent: #f2a93b; --accent-ink: #1a1206; --up: #3dcf8e; --degraded: #f2a93b;
+    --down: #ff6161; --unknown: #6f7787;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font-family: system-ui, "Segoe UI", sans-serif; font-size: 16px; }
+  main { max-width: 1100px; margin: 0 auto; padding: 16px; display: grid; gap: 16px;
+         grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); }
+  section { background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
+            padding: 16px; min-width: 0; }
+  section.wide { grid-column: 1 / -1; }
+  h2 { margin: 0 0 12px; font-size: 1rem; font-weight: 600; display: flex; align-items: center; gap: 8px; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--unknown); flex: none; }
+  .dot.up { background: var(--up); } .dot.degraded { background: var(--degraded); }
+  .dot.down { background: var(--down); }
+  .state { margin-left: auto; color: var(--muted); font-weight: 400; }
+  dl { margin: 0; display: grid; grid-template-columns: auto 1fr; gap: 6px 16px; }
+  dt { color: var(--muted); } dd { margin: 0; overflow-wrap: anywhere; }
+  .buttons { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 14px; }
+  button { font: inherit; color: var(--text); background: transparent; border: 1px solid var(--border);
+           border-radius: 10px; padding: 14px 18px; min-width: 110px; cursor: pointer; }
+  button:hover:not(:disabled) { border-color: var(--accent); }
+  button.active { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+  button:disabled { opacity: .4; cursor: default; }
+  .label { color: var(--muted); font-size: .85rem; margin: 16px 0 0; }
+  .note { color: var(--muted); margin: 0; }
+  .warn { color: var(--down); margin: 12px 0 0; }
+  #message { min-height: 1.4em; margin: 12px 0 0; color: var(--down); }
+  img { display: block; width: 100%; border-radius: 8px; background: #000; }
+</style>
+</head>
+<body>
+<main>
+  <section class="wide">
+    <h2><span class="dot" id="p-dot"></span>Beamer<span class="state" id="p-state">…</span></h2>
+    <div id="p-body"></div>
+    <p id="message" role="status"></p>
+  </section>
+  <section>
+    <h2><span class="dot" id="r-dot"></span>Drahtlos-Übertragung<span class="state" id="r-state">…</span></h2>
+    <div id="r-body"></div>
+  </section>
+  <section>
+    <h2><span class="dot" id="b-dot"></span>Funk-Sender<span class="state" id="b-state">…</span></h2>
+    <div id="b-body"></div>
+  </section>
+</main>
+<script>
+const POWER = { on: ["An", "up"], off: ["Aus", "unknown"], warming: ["Startet …", "degraded"],
+                cooling: ["Kühlt ab …", "degraded"], unknown: ["Unbekannt", "unknown"] };
+const $ = id => document.getElementById(id);
+let streamShown = false;
+
+function el(tag, props, children) {
+  const node = Object.assign(document.createElement(tag), props || {});
+  (children || []).forEach(c => node.append(c));
+  return node;
+}
+function rows(pairs) {
+  const dl = el("dl");
+  pairs.filter(p => p[1] !== undefined && p[1] !== null && p[1] !== "")
+       .forEach(([k, v]) => dl.append(el("dt", { textContent: k }), el("dd", { textContent: v })));
+  return dl;
+}
+function head(prefix, cls, text) {
+  $(prefix + "-dot").className = "dot " + cls;
+  $(prefix + "-state").textContent = text;
+}
+function duration(s) {
+  const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60);
+  return h ? h + " h " + m + " min" : m ? m + " min" : s + " s";
+}
+
+async function send(action, value) {
+  $("message").textContent = "";
+  document.querySelectorAll("#p-body button").forEach(b => b.disabled = true);
+  try {
+    const reply = await fetch("/api/projector", { method: "POST",
+      headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action, value }) });
+    const data = await reply.json();
+    if (!data.ok) $("message").textContent = data.error || "Befehl fehlgeschlagen";
+  } catch (e) {
+    $("message").textContent = "Keine Verbindung zum Server";
+  }
+  setTimeout(refresh, 800);
+}
+function button(text, active, disabled, onclick) {
+  return el("button", { textContent: text, className: active ? "active" : "", disabled, onclick });
+}
+
+function showProjector(p) {
+  const body = $("p-body");
+  body.replaceChildren();
+  if (!p.configured) {
+    head("p", "unknown", "nicht eingerichtet");
+    body.append(el("p", { className: "note",
+      textContent: "Die Adresse des Beamers fehlt noch in /etc/acermiracast/config.json (projector_host)." }));
+    return;
+  }
+  if (!p.reachable) {
+    head("p", "down", "nicht erreichbar");
+    body.append(rows([["Adresse", p.host], ["Fehler", p.error]]));
+    return;
+  }
+  const [text, cls] = POWER[p.power] || POWER.unknown;
+  head("p", p.errors.some(e => e.level === "error") ? "down" : cls, text);
+  body.append(rows([["Gerät", p.name || p.model], ["Modell", p.name ? p.model : ""], ["Adresse", p.host],
+    ["Eingang", p.input_label], ["Lampe", p.lamp_hours === null ? "" : p.lamp_hours + " h"]]));
+  p.errors.forEach(e => body.append(el("p", { className: "warn",
+    textContent: (e.level === "error" ? "Fehler: " : "Warnung: ") + e.part })));
+  const busy = p.power === "warming" || p.power === "cooling";
+  const on = p.power === "on";
+  body.append(el("div", { className: "buttons" }, [
+    button("Einschalten", on, busy || on, () => send("power", "on")),
+    button("Ausschalten", p.power === "off", busy || p.power === "off", () => send("power", "off")),
+    button(p.mute ? "Bild wieder an" : "Bild aus", !!p.mute, !on, () => send("mute", p.mute ? "off" : "on")),
+  ]));
+  if (p.inputs.length) {
+    body.append(el("p", { className: "label", textContent: "Eingang" }));
+    body.append(el("div", { className: "buttons" },
+      p.inputs.map(i => button(i.label, on && i.code === p.input, !on, () => send("input", i.code)))));
+  }
+}
+
+function showReceiver(r) {
+  const body = $("r-body");
+  const s = r.session;
+  if (!s) {
+    head("r", "up", "bereit");
+    streamShown = false;
+    body.replaceChildren(el("p", { className: "note",
+      textContent: "Niemand überträgt. Am Laptop Win+K drücken und „" + (r.name || "den Raum") + "“ wählen." }));
+    return;
+  }
+  head("r", s.playing ? "up" : "degraded", s.playing ? "läuft" : "verbindet …");
+  const info = rows([["Gerät", s.source], ["Adresse", s.ip], ["Dauer", duration(s.seconds)]]);
+  if (s.frames > 0 && streamShown) {           // keep the running <img>, only swap the text
+    body.firstChild.replaceWith(info);
+    return;
+  }
+  body.replaceChildren(info);
+  if (s.frames > 0) {
+    body.append(el("img", { src: "/stream", alt: "Übertragenes Bild", style: "margin-top:12px" }));
+    streamShown = true;
+  }
+}
+
+function showBeacon(b) {
+  const body = $("b-body");
+  if (!b.configured) {
+    head("b", "unknown", "nicht eingerichtet");
+    body.replaceChildren(el("p", { className: "note", textContent: "Keine Adresse hinterlegt (beacon_host)." }));
+    return;
+  }
+  if (!b.reachable) {
+    head("b", "down", "nicht erreichbar");
+    body.replaceChildren(rows([["Adresse", b.host], ["Fehler", b.error]]));
+    return;
+  }
+  const ok = b.up && !b.stale;
+  head("b", ok ? "up" : "down", b.stale ? "meldet sich nicht mehr" : b.up ? "sendet" : "sendet nicht");
+  body.replaceChildren(rows([["Name in Win+K", b.name], ["Ziel", b.receiver], ["Kanal", b.channel],
+    ["Adresse", b.host], ["Läuft seit", b.uptime ? duration(b.uptime) : ""]]));
+}
+
+async function refresh() {
+  try {
+    const data = await (await fetch("/api/status", { cache: "no-store" })).json();
+    showProjector(data.projector);
+    showReceiver(data.receiver);
+    showBeacon(data.beacon);
+  } catch (e) {
+    ["p", "r", "b"].forEach(x => head(x, "down", "Server antwortet nicht"));
+  }
+}
+refresh();
+setInterval(refresh, 3000);
+</script>
+</body>
+</html>

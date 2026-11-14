@@ -1,0 +1,15 @@
+[Unit]
+Description=Miracast over Infrastructure sink
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# adjust the path to where the repository lives on the VM
+WorkingDirectory=/opt/AcerMiracast/receiver
+ExecStart=/usr/bin/python3 -u /opt/AcerMiracast/receiver/miracast_sink.py
+Restart=always
+RestartSec=3
+DynamicUser=yes
+
+[Install]
+WantedBy=multi-user.target
