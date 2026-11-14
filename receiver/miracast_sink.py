@@ -25,6 +25,7 @@ import sys
 import threading
 import time
 
+import ezdisplay
 import panel
 from mice_listen import decode_message
 
@@ -94,10 +95,14 @@ class FrameHub:
 # ---- decoder: MPEG-TS in, JPEG frames out ------------------------------------------------------
 
 class Decoder:
-    def __init__(self, hub, fps, width, quality):
+    def __init__(self, hub, fps, width, quality, height=0):
         vf = "fps=%d" % fps
-        if width:
+        if width and height:      # exact size, letterboxed
+            vf += (",scale=%d:%d:force_original_aspect_ratio=decrease,pad=%d:%d:(ow-iw)/2:(oh-ih)/2"
+                   % (width, height, width, height))
+        elif width:
             vf += ",scale=%d:-2" % width
+        vf += ",format=yuvj420p"  # plain baseline 4:2:0 JPEG
         cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error",
                "-fflags", "nobuffer", "-flags", "low_delay", "-probesize", "200000",
                "-analyzeduration", "500000", "-f", "mpegts", "-i", "pipe:0",
@@ -319,7 +324,8 @@ class Session:
         decoder = None
         dump = None
         if not self.args.no_decode:
-            decoder = self.decoder = Decoder(self.hub, self.args.fps, self.args.width, self.args.quality)
+            decoder = self.decoder = Decoder(self.hub, self.args.fps, self.args.width, self.args.quality,
+                                             getattr(self.args, "height", 0))
             sinks.append(decoder.feed)
         if self.args.dump_ts:
             dump = open(self.args.dump_ts, "wb")
@@ -496,15 +502,28 @@ def main():
     if not args.no_decode and not shutil.which("ffmpeg"):
         sys.exit("ffmpeg was not found on PATH (install it, or use --no-decode)")
 
+    config = {}
+    try:
+        with open(args.config, encoding="utf-8") as handle:
+            config = json.load(handle)
+    except FileNotFoundError:
+        log("no config file %s, running without projector and beacon" % args.config)
+
     hub = FrameHub()
+    if config.get("picture_output") == "ezdisplay" and config.get("projector_host"):
+        # the projector wants pictures in exactly its own size
+        args.width = int(config.get("picture_width", 1920))
+        args.height = int(config.get("picture_height", 1080))
+        host = config["projector_host"]
+        prepare = None
+        if config.get("projector_control", "acer_web") == "acer_web":
+            prepare = lambda: panel.acer_post(host, "/form/control_cgi", "src=33")   # LAN/WiFi input
+        hub.outputs.append(ezdisplay.EZDisplayOutput(
+            host, args.width, args.height, config.get("room_name", "Plintus"), prepare))
+        log("pictures go to the projector %s as %dx%d" % (host, args.width, args.height))
+
     sink = Sink(args, hub)
     if args.http_port:
-        config = {}
-        try:
-            with open(args.config, encoding="utf-8") as handle:
-                config = json.load(handle)
-        except FileNotFoundError:
-            log("no config file %s, panel runs without projector and beacon" % args.config)
         panel.start(args.bind, args.http_port, hub, sink, config)
         log("web panel on http://%s:%d/" % (args.bind, args.http_port))
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)

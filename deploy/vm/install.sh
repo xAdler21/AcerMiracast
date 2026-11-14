@@ -31,10 +31,22 @@ id acermiracast >/dev/null 2>&1 || useradd --system --home-dir /var/lib/acermira
 	--no-create-home --shell /usr/sbin/nologin acermiracast
 
 install -d -m 755 /opt/acermiracast /etc/acermiracast
-install -m 644 miracast_sink.py mice_listen.py panel.py panel.html /opt/acermiracast/
+install -m 644 miracast_sink.py mice_listen.py panel.py panel.html ezdisplay.py /opt/acermiracast/
 if [ ! -f /etc/acermiracast/config.json ]; then
 	install -m 644 config.json /etc/acermiracast/config.json
 	echo "== neue Konfiguration /etc/acermiracast/config.json"
+else
+	# keep what is set on the VM; only add keys that are new in this version (or still empty)
+	python3 - <<'PY_END'
+import json
+path = "/etc/acermiracast/config.json"
+current = json.load(open(path))
+added = [k for k, v in json.load(open("config.json")).items()
+         if current.get(k, "") == "" and v != "" and not current.update({k: v})]
+if added:
+    json.dump(current, open(path, "w"), indent=2)
+    print("== Konfiguration ergaenzt:", ", ".join(added))
+PY_END
 fi
 
 install -m 644 acermiracast.service /etc/systemd/system/acermiracast.service

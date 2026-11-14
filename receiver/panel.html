@@ -106,7 +106,7 @@ function showProjector(p) {
       textContent: "Die Adresse des Beamers fehlt noch in /etc/acermiracast/config.json (projector_host)." }));
     return;
   }
-  if (!p.reachable) {
+  if (!p.reachable && !p.offline) {
     head("p", "down", "nicht erreichbar");
     body.append(rows([["Adresse", p.host], ["Fehler", p.error]]));
     return;
@@ -119,11 +119,13 @@ function showProjector(p) {
     textContent: (e.level === "error" ? "Fehler: " : "Warnung: ") + e.part })));
   const busy = p.power === "warming" || p.power === "cooling";
   const on = p.power === "on";
-  body.append(el("div", { className: "buttons" }, [
+  const main = [
     button("Einschalten", on, busy || on, () => send("power", "on")),
     button("Ausschalten", p.power === "off", busy || p.power === "off", () => send("power", "off")),
-    button(p.mute ? "Bild wieder an" : "Bild aus", !!p.mute, !on, () => send("mute", p.mute ? "off" : "on")),
-  ]));
+  ];
+  if (p.mute !== undefined)                    // only projectors with a working picture mute
+    main.push(button(p.mute ? "Bild wieder an" : "Bild aus", !!p.mute, !on, () => send("mute", p.mute ? "off" : "on")));
+  body.append(el("div", { className: "buttons" }, main));
   if (p.inputs.length) {
     body.append(el("p", { className: "label", textContent: "Eingang" }));
     body.append(el("div", { className: "buttons" },

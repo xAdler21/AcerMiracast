@@ -9,7 +9,7 @@ $key = Join-Path $env:USERPROFILE '.ssh\claude_plintus_vm'
 $work = Join-Path $env:TEMP "acermiracast-push-$PID"
 New-Item -ItemType Directory -Force "$work\pkg" | Out-Null
 try {
-    $files = 'receiver\miracast_sink.py', 'receiver\mice_listen.py', 'receiver\panel.py', 'receiver\panel.html',
+    $files = 'receiver\miracast_sink.py', 'receiver\mice_listen.py', 'receiver\panel.py', 'receiver\panel.html', 'receiver\ezdisplay.py',
              'deploy\vm\install.sh', 'deploy\vm\acermiracast.service', 'deploy\vm\config.json'
     foreach ($f in $files) {
         # normalise to LF so the shell script and unit file work on Linux

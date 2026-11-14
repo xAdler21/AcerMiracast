@@ -15,6 +15,7 @@ import hashlib
 import http.server
 import json
 import os
+import re
 import socket
 import threading
 import time
@@ -24,6 +25,26 @@ PJLINK_PORT = 4352
 POWER = {"0": "off", "1": "on", "2": "cooling", "3": "warming"}
 INPUT_KINDS = {"1": "RGB", "2": "Video", "3": "Digital", "4": "Speicher", "5": "Netzwerk"}
 ERROR_PARTS = ["Lüfter", "Lampe", "Temperatur", "Abdeckung", "Filter", "Sonstiges"]
+
+
+# Acer projectors with the ATOP network module (web page "Acer Projector Control"): PJLink on
+# these reports a wrong state, the web page's own interface is the one that works.
+ACER_INPUTS = [("3", "HDMI 1"), ("6", "HDMI 2"), ("33", "Drahtlos"), ("20", "VGA 1"),
+               ("21", "VGA 2"), ("22", "Video"), ("34", "Medien"), ("35", "USB")]
+ACER_ERRORS = {"1": "Lüfter blockiert", "2": "Übertemperatur", "3": "Thermoschalter",
+               "4": "Lampe zündet nicht", "5": "Lampe ging aus", "6": "Farbrad"}
+
+
+def acer_post(host, path, body):
+    """POST to the projector's web interface; returns its answer {key: value}.
+
+    The answer looks like '<html>\\n{pwr:"1",hid:"0",src:"6"}' (keys unquoted).
+    """
+    request = urllib.request.Request("http://%s%s" % (host, path), data=body.encode(),
+                                     headers={"Content-Type": "application/x-www-form-urlencoded"})
+    with urllib.request.urlopen(request, timeout=4) as reply:
+        text = reply.read(4096).decode("utf-8", "replace")
+    return dict(re.findall(r'(\w+):"([^"]*)"', text))
 
 
 class PJLinkError(Exception):
@@ -101,6 +122,7 @@ class Monitor(threading.Thread):
         self.projector = {"configured": bool(config.get("projector_host")), "reachable": False}
         self.beacon = {"configured": bool(config.get("beacon_host")), "reachable": False}
         self._beacon_checked = 0.0
+        self._waking_until = 0.0
         self._beacon_uptime = None
         self._beacon_changed = time.monotonic()
 
@@ -111,6 +133,76 @@ class Monitor(threading.Thread):
         if not self.config.get("projector_host"):
             return
         state = {"configured": True, "reachable": False, "host": self.config["projector_host"]}
+        if self.config.get("projector_control", "acer_web") == "acer_web":
+            self._poll_acer(state)
+        else:
+            self._poll_pjlink(state)
+        with self.lock:
+            self.projector = state
+
+    def _poll_acer(self, state):
+        state["model"] = self.config.get("projector_model", "")
+        state["inputs"] = [{"code": code, "label": label} for code, label in ACER_INPUTS]
+        state["errors"] = []
+        state["lamp_hours"] = None
+        try:
+            home = acer_post(state["host"], "/form/home_cgi", "QueryControl")
+            ctrl = acer_post(state["host"], "/form/control_cgi", "QueryControl")
+        except OSError:
+            # Switched off, the projector leaves the network completely. That is its normal
+            # "off"; it comes back with a Wake-on-LAN packet.
+            state["power"] = "warming" if time.monotonic() < self._waking_until else "off"
+            state["offline"] = True
+            return
+        state["reachable"] = True
+        self._waking_until = 0.0
+        status = home.get("sysstatus", "")
+        state["power"] = {"0": "off", "3": "cooling"}.get(status, "on" if status else "unknown")
+        if home.get("lamphur", "").isdigit():
+            state["lamp_hours"] = int(home["lamphur"])
+        error = ACER_ERRORS.get(home.get("errorstatus", "0"))
+        if error:
+            state["errors"] = [{"part": error, "level": "error"}]
+        if state["power"] == "on":
+            state["input"] = home.get("displaysrc", "")
+            state["input_label"] = dict(ACER_INPUTS).get(state["input"], "")
+            # No "mute": the projector's Hide flag stayed at 1 after toggling it back in a
+            # test, so the panel offers no picture-off button for this projector.
+            state["hide_flag"] = ctrl.get("hid", "")
+
+    def _command_acer(self, action, value):
+        host = self.config["projector_host"]
+        with self.lock:
+            current = dict(self.projector)
+        try:
+            if action == "power" and value == "on":
+                if current.get("reachable"):
+                    if current.get("power") == "off":            # standby with network still up
+                        acer_post(host, "/form/control_cgi", "pwr=pwr")
+                    return None
+                wake = self.config.get("wake_url")
+                if not wake:
+                    return "Einschalten ist nicht eingerichtet (wake_url fehlt)"
+                request = urllib.request.Request(wake, data=b"wake", method="POST")
+                with urllib.request.urlopen(request, timeout=6) as reply:
+                    if b"ok" not in reply.read(200):
+                        return "Der Funk-Sender konnte das Weck-Paket nicht schicken"
+                self._waking_until = time.monotonic() + 90
+                return None
+            if not current.get("reachable"):
+                return "Der Beamer ist aus"
+            if action == "power" and value == "off":
+                if current.get("power") == "on":                 # the device only has a toggle
+                    acer_post(host, "/form/control_cgi", "pwr=pwr")
+            elif action == "input" and value in dict(ACER_INPUTS):
+                acer_post(host, "/form/control_cgi", "src=" + value)
+            else:
+                return "Unbekannter Befehl"
+        except OSError:
+            return "Der Beamer antwortet nicht"
+        return None
+
+    def _poll_pjlink(self, state):
         try:
             link = self.pjlink()
             answer = link.run([("POWR", "?"), ("NAME", "?"), ("INF1", "?"), ("INF2", "?"),
@@ -137,8 +229,6 @@ class Monitor(threading.Thread):
                 state["mute"] = more.get("AVMT", "") in ("11", "31")
         except (OSError, PJLinkError) as exc:
             state["error"] = str(exc)
-        with self.lock:
-            self.projector = state
 
     def poll_beacon(self):
         host = self.config.get("beacon_host")
@@ -173,6 +263,10 @@ class Monitor(threading.Thread):
         """Send one control command to the projector. Returns an error text or None."""
         if not self.config.get("projector_host"):
             return "Kein Beamer konfiguriert"
+        if self.config.get("projector_control", "acer_web") == "acer_web":
+            error = self._command_acer(action, value)
+            self.wake.set()
+            return error
         if action == "power" and value in ("on", "off"):
             cmd = ("POWR", "1" if value == "on" else "0")
         elif action == "mute" and value in ("on", "off"):
