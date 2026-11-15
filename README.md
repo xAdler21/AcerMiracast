@@ -101,8 +101,23 @@ page ends it):
 
 | Page | Content |
 |---|---|
-| `/` | power, inputs, hide, freeze, volume of the transmission, screen sharing, who presents (preview, sound level, "Übertragung beenden"), disconnecting presenters, requests of other presenters |
-| `/admin` | everything: also picture settings, remote-control keys, split screen, administration, sound target, beacon box and Wi-Fi Direct mode |
+| `/` | power, hide, freeze, inputs (shown also while the projector is off), screen sharing, who presents (preview, sound level, "Übertragung beenden"), volume of the transmission, disconnecting presenters, requests of other presenters |
+| `/admin` | everything else, nothing twice: picture settings, remote-control keys, split screen and moderator, AirView (screenshot of what the projector shows), administration of the Acer web interface and the EZCast module, sound target, beacon box and Wi-Fi Direct mode |
+
+The admin page shows its sections also while the projector is off, with a note: switched off it
+is not on the network, so nothing of it can be read or changed then.
+
+Besides the Acer pages (LAN, login, e-mail alerts, Crestron) and the EZCast functions with a page
+of their own (Wi-Fi, hotspot password, firmware, reboot, reset), the admin page offers the EZCast
+commands that only the firmware's unused "Device Management" and admin scripts know: hidden networks and WPA2-Enterprise (PEAP), IP
+address in the Wi-Fi, hiding the hotspot name, maximum connections, hotspot channel 2.4/5 GHz,
+castcode, Miracode, Internet access through the hotspot, hiding the hotspot password on the
+picture, router-only mode, rights of the moderator, AirView, HDMI-CEC, SNMP on/off, password of the
+EZCast pages and the firmware update server. No shipped page calls them, so the panel reads each
+one first (`ez_read`, when the admin page opens) and leaves out what the firmware does not answer;
+after every change it reads the value back. Not offered because the firmware lacks the CGI:
+device name, resolution, language, default mode, EQ, autoplay, USB/AirDisk, RS232 control,
+EAP-TLS certificates.
 
 ### Screen sharing from the panel
 

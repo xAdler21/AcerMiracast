@@ -190,6 +190,14 @@ impl Monitor {
         result
     }
 
+    /// Screenshot of the projector (AirView of the EZCast module).
+    pub fn airview(&self) -> Result<Vec<u8>, String> {
+        if self.config.projector_host.is_empty() || self.state.lock().unwrap().projector["reachable"] != true {
+            return Err("Der Beamer ist aus".into());
+        }
+        admin::airview(&self.config.projector_host)
+    }
+
     /// Wi-Fi Direct on the box (install-p2p.sh): "off", "fallback" or "only". The box switches
     /// in the background (about 20 s, the beacon is gone for a moment meanwhile).
     fn set_p2p_mode(&self, mode: &str) -> Result<Value, String> {
@@ -560,6 +568,10 @@ fn handle(mut stream: TcpStream, monitor: &Monitor, hub: &Arc<Hub>, share: &Shar
         }
         ("GET", "/api/status") => respond(&mut stream, 200, "application/json", monitor.status().to_string().as_bytes()),
         ("GET", "/api/state") => respond(&mut stream, 200, "application/json", monitor.short_state().to_string().as_bytes()),
+        ("GET", "/api/airview.jpg") => match monitor.airview() {
+            Ok(jpg) => respond(&mut stream, 200, "image/jpeg", &jpg),
+            Err(e) => respond(&mut stream, 503, "text/plain; charset=utf-8", e.as_bytes()),
+        },
         ("GET", "/frame.jpg") => match hub.wait_frame(u64::MAX, Duration::ZERO).1 {
             Some(f) => respond(&mut stream, 200, "image/jpeg", &f),
             None => respond(&mut stream, 503, "text/plain", b"no session"),

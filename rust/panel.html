@@ -78,6 +78,9 @@
        border-radius: 8px; padding: 8px; max-width: 100%; }
   .small { font-size: .88rem; }
   body[data-page="open"] .admin-only { display: none !important; }
+  body[data-page="admin"] .open-only { display: none !important; }
+  .ez-group { display: grid; gap: 4px; margin-top: 12px; max-width: 640px; }
+  .ez-group .buttons { margin-top: 4px; }
   .top { grid-column: 1 / -1; display: flex; justify-content: flex-end; }
   .btn { font: inherit; color: var(--text); text-decoration: none; border: 1px solid var(--border);
          border-radius: 10px; padding: 10px 16px; }
@@ -98,7 +101,7 @@
     <div id="p-body"></div>
     <p id="message" role="status"></p>
   </section>
-  <section class="wide" id="share-sec">
+  <section class="wide open-only" id="share-sec">
     <h2><span class="dot" id="share-dot"></span>Bildschirm teilen<span class="state" id="share-state"></span></h2>
     <p class="note">Zeigt den Bildschirm dieses PCs auf dem Beamer, ohne Win+K. Den Bildschirm oder das
       Fenster wählst du im Fenster des Browsers.</p>
@@ -117,7 +120,7 @@
     </div>
     <p class="warn" id="share-msg" role="status"></p>
   </section>
-  <section class="wide">
+  <section class="wide open-only">
     <h2><span class="dot" id="r-dot"></span>Übertragung<span class="state" id="r-state">…</span></h2>
     <div id="r-body"></div>
     <div class="share-row" id="r-audio" hidden>
@@ -132,45 +135,75 @@
     </div>
     <p class="warn" id="r-msg" role="status"></p>
   </section>
-  <section class="wide admin-only" id="s-sec" hidden>
+  <section class="wide admin-only" id="s-sec">
     <h2>Einstellungen am Beamer</h2>
-    <div class="groups" id="s-body"></div>
+    <p class="note" id="s-off">Der Beamer ist aus. Bild, Geometrie, Ton und Aufstellung lassen sich erst
+      einstellen, wenn er an ist (Einschalten auf der Startseite).</p>
+    <div class="groups" id="s-body" hidden></div>
   </section>
-  <section class="wide" id="c-sec" hidden>
+  <section class="wide" id="c-sec">
     <h2>Präsentation am Beamer</h2>
-    <div id="c-guests"></div>
-    <div class="groups">
-      <div>
-        <div class="admin-only">
-          <h3>Fernbedienung (EZCast-Menü)</h3>
-          <div class="pad">
-            <span></span><button data-key="10" aria-label="Hoch">▲</button><span></span>
-            <button data-key="12" aria-label="Links">◀</button><button data-key="14">OK</button><button data-key="13" aria-label="Rechts">▶</button>
-            <button data-key="15">Zurück</button><button data-key="11" aria-label="Runter">▼</button><span></span>
+    <p class="note admin-only" id="c-off">Der Beamer ist aus.</p>
+    <div id="c-body">
+      <div id="c-guests" class="open-only"></div>
+      <div class="groups">
+        <div>
+          <div class="admin-only">
+            <h3>Fernbedienung (EZCast-Menü)</h3>
+            <div class="pad">
+              <span></span><button data-key="10" aria-label="Hoch">▲</button><span></span>
+              <button data-key="12" aria-label="Links">◀</button><button data-key="14">OK</button><button data-key="13" aria-label="Rechts">▶</button>
+              <button data-key="15">Zurück</button><button data-key="11" aria-label="Runter">▼</button><span></span>
+            </div>
+          </div>
+          <div class="open-only">
+            <h3>Lautstärke der Übertragung</h3>
+            <div class="buttons" style="margin-top:0">
+              <button id="vol-down">Leiser</button><button id="vol-up">Lauter</button>
+            </div>
           </div>
         </div>
-        <h3 class="admin-gap">Lautstärke der Übertragung</h3>
-        <div class="buttons" style="margin-top:0">
-          <button id="vol-down">Leiser</button><button id="vol-up">Lauter</button>
+        <div>
+          <h3>Wer gerade zeigt</h3>
+          <div id="c-list"></div>
+          <div class="buttons admin-only"><button id="conf-all" class="danger">Alle trennen</button></div>
         </div>
-      </div>
-      <div>
-        <h3>Wer gerade zeigt</h3>
-        <div id="c-list"></div>
-        <div class="buttons"><button id="conf-all" class="danger">Alle trennen</button></div>
       </div>
     </div>
     <p class="warn" id="c-msg" role="status"></p>
   </section>
-  <section class="wide admin-only" id="a-sec" hidden>
+  <section class="wide admin-only" id="v-sec">
+    <h2>Bild vom Beamer (AirView)</h2>
+    <p class="note">Holt ein Bildschirmfoto dessen, was der Beamer gerade zeigt. Geht nur, wenn AirView
+      eingeschaltet ist.</p>
+    <p class="note" id="v-off">Der Beamer ist aus.</p>
+    <div id="v-body">
+      <div id="ez-airview"></div>
+      <div class="buttons">
+        <button id="v-get">Bild holen</button>
+        <label class="note"><input type="checkbox" id="v-auto"> alle 5 Sekunden</label>
+      </div>
+      <p class="warn" id="v-msg" role="status"></p>
+      <img id="v-img" alt="Bild vom Beamer" hidden style="max-width:640px;margin-top:12px">
+    </div>
+  </section>
+  <section class="wide admin-only" id="a-sec">
     <h2>Verwaltung des Beamers</h2>
-    <div id="a-info"></div>
-    <div id="a-body"></div>
+    <p class="note" id="a-off">Der Beamer ist aus. Netzwerk, WLAN, Hotspot, Zugang, Anmeldung,
+      E-Mail-Alarm, Crestron und Firmware lassen sich erst einstellen, wenn er an ist: ausgeschaltet ist er
+      nicht im Netz.</p>
+    <div id="a-on" hidden>
+      <div id="a-info"></div>
+      <p class="warn" id="ez-warn"></p>
+      <div id="a-body"></div>
+      <p class="note small" id="ez-missing"></p>
+      <div class="buttons"><button id="ez-reload">Einstellungen neu lesen</button></div>
+    </div>
   </section>
   <section class="wide admin-only" id="t-sec">
     <h2>Ton</h2>
-    <p class="note">Der Ton von Win+K und vom Bildschirm-Teilen kommt hier an. Die Pegelanzeige steht bei
-      „Übertragung“.</p>
+    <p class="note">Der Ton von Win+K und vom Bildschirm-Teilen kommt hier an. Die Pegelanzeige steht auf
+      der Startseite bei „Übertragung“.</p>
     <div class="share-row">
       <label class="note" for="t-target">Ziel</label>
       <select id="t-target"></select>
@@ -269,18 +302,18 @@ function showProjector(p) {
     ["Eingang", p.input_label], ["Lampe", p.lamp_hours === null ? "" : p.lamp_hours + " h"]]));
   p.errors.forEach(e => body.append(el("p", { className: "warn",
     textContent: (e.level === "error" ? "Fehler: " : "Warnung: ") + e.part })));
+  if (ADMIN) return;                           // power, hide, freeze and inputs are on the start page
   const busy = p.power === "warming" || p.power === "cooling";
   const on = p.power === "on";
+  const s = on && p.settings;                  // hide/freeze state comes with the control page query
   const main = [
     button("Einschalten", on, busy || on, () => send("power", "on")),
     button("Ausschalten", p.power === "off", busy || p.power === "off", () => send("power", "off")),
+    button("Hide", !!s && s.hid === "1", !s, () => send("press", "hid")),
+    button("Freeze", !!s && s.frz === "1", !s, () => send("press", "frz")),
   ];
   if (p.mute !== undefined)                    // only projectors with a working picture mute
     main.push(button(p.mute ? "Bild wieder an" : "Bild aus", !!p.mute, !on, () => send("mute", p.mute ? "off" : "on")));
-  if (!ADMIN && p.settings) {                  // on /admin these are under "Einstellungen am Beamer"
-    main.push(button("Bild ausblenden", on && p.settings.hid === "1", !on, () => send("press", "hid")));
-    main.push(button("Freeze", on && p.settings.frz === "1", !on, () => send("press", "frz")));
-  }
   body.append(el("div", { className: "buttons" }, main));
   if (p.inputs.length) {
     body.append(el("p", { className: "label", textContent: "Eingang" }));
@@ -302,9 +335,10 @@ const CHOICES = {
   prj: ["Projektion", [["0", "Von vorn, Tisch"], ["2", "Von hinten, Tisch"]]],
   lgo: ["Startbild", [["0", "Acer"], ["1", "Eigenes"]]],
 };
-const TOGGLES = { hid: "Bild ausblenden", frz: "Freeze", eco: "Eco-Modus" };
+// Hide and Freeze are on the start page
+const TOGGLES = { eco: "Eco-Modus" };
 const GROUPS = [
-  ["Schnell", ["hid", "frz", "eco", "syc", "rst"]],
+  ["Schnell", ["eco", "syc", "rst"]],
   ["Bild", ["mod", "bri", "con", "gam", "ctp"]],
   ["Geometrie", ["aks", "vks", "hks", "apr", "zom"]],
   ["Ton und Aufstellung", ["vol", "prj", "lgo"]],
@@ -362,8 +396,10 @@ function buildSettings() {
   settingsBuilt = true;
 }
 function showSettings(p) {
+  if (!ADMIN) return;
   const s = p.power === "on" && p.settings;
-  $("s-sec").hidden = !s;
+  $("s-off").hidden = !!s;
+  $("s-body").hidden = !s;
   if (!s) return;
   if (!settingsBuilt) buildSettings();
   Object.values(ctl).forEach(c => c.update(s));
@@ -396,7 +432,9 @@ const POSITIONS = [["1:1", "Vollbild"], ["2:1", "Links"], ["2:2", "Rechts"],
                    ["4:1", "Viertel 1"], ["4:2", "Viertel 2"], ["4:3", "Viertel 3"], ["4:4", "Viertel 4"]];
 function showConference(data) {
   const on = data.projector.power === "on";
-  $("c-sec").hidden = !on;
+  if (!ADMIN) $("c-sec").hidden = !on;         // the start page shows it only when there is something
+  $("c-off").hidden = on;
+  $("c-body").hidden = !on;
   if (!on) return;
   $("c-guests").replaceChildren(...(data.guests || []).map(g => el("div", { className: "guest" }, [
     el("p", { className: "note", textContent: (g.name || "Ein Gerät") + " (" + g.ip + ") möchte präsentieren" }),
@@ -414,9 +452,11 @@ function showConference(data) {
     return el("div", { className: "client" }, [
       rows([["Gerät", c.name || c.ip], ["Adresse", c.ip], ["Rolle", host ? "Moderator" : "Gast"],
             ["Platz", where ? where[1] : "nicht im Bild"]]),
-      el("div", { className: "buttons" }, [
-        ...(ADMIN ? POSITIONS.map(([v, l]) => button(l, where && where[0] === v, false, () => api("conf", v, { ip: c.ip }))) : []),
-        ...(host || !ADMIN ? [] : [button("Zum Moderator", false, false, () => api("conf", "host", { ip: c.ip }, "„" + (c.name || c.ip) + "“ zum Moderator machen?"))]),
+      // start page: disconnect; admin page: place on the screen and moderator
+      el("div", { className: "buttons" }, ADMIN ? [
+        ...POSITIONS.map(([v, l]) => button(l, where && where[0] === v, false, () => api("conf", v, { ip: c.ip }))),
+        ...(host ? [] : [button("Zum Moderator", false, false, () => api("conf", "host", { ip: c.ip }, "„" + (c.name || c.ip) + "“ zum Moderator machen?"))]),
+      ] : [
         button("Trennen", false, false, () => api("conf", "kick", { ip: c.ip }, "„" + (c.name || c.ip) + "“ vom Beamer trennen?")),
       ]),
     ]);
@@ -525,22 +565,246 @@ function buildAdmin() {
       if (await api("ez_reset", "", null, null, out)) out.textContent = "Wird zurückgesetzt …";
     } }),
   ]);
+  const add = form("f-add", [["ssid", "Netzname (SSID)"], ["psk", "Passwort", "password"],
+    ["identity", "Benutzername (nur bei 802.1X)"]], (f, out) => [
+    button("Hinzufügen und verbinden", false, false, async () => {
+      const v = values(f);
+      if (await api("wifi_add", "", v, "Das Netz „" + v.ssid + "“ am Beamer hinzufügen und verbinden?", out)) { out.textContent = "Hinzugefügt, verbindet …"; f.psk.value = ""; }
+    })]);
+  add.prepend(el("label", {}, ["Verschlüsselung", el("select", { name: "security" }, [
+    ["wpa", "WPA/WPA2 mit Passwort"], ["open", "Offen, ohne Passwort"], ["peap", "WPA2-Enterprise, PEAP"],
+    ["mschap", "WPA2-Enterprise, PEAP-MSCHAPv2"]].map(([v, l]) => el("option", { value: v, textContent: l })))]));
+  const ezpw = form("f-ezpw", [["password", "Neues Passwort (6–64 Buchstaben/Ziffern)", "password"],
+    ["password2", "Neues Passwort wiederholen", "password"]], (f, out) => [
+    button("Ändern", false, false, async () => {
+      const v = values(f);
+      if (v.password !== v.password2) { out.textContent = "Die beiden Passwörter sind verschieden."; return; }
+      if (await ezSet("ez_password", { password: v.password }, "Passwort der EZCast-Oberfläche (Port 8080) ändern?", out)) f.reset();
+    })]);
   $("a-body").replaceChildren(
-    details("Netzwerk (LAN)", [lan]), details("WLAN des Beamers", [wifi]), details("Hotspot des Beamers", [ap]),
-    details("Anmeldung an der Acer-Weboberfläche", [login]), details("E-Mail-Alarm", [mail]),
-    details("Crestron", [cres]), details("Firmware des EZCast-Moduls", [fw]), details("System", [sys]));
+    details("Netzwerk (LAN)", [lan]),
+    details("WLAN des Beamers", [wifi, el("h3", { className: "admin-gap", textContent: "Verstecktes oder Firmen-Netz hinzufügen" }), add,
+      el("h3", { className: "admin-gap", textContent: "IP-Adresse im WLAN" }), el("div", { id: "ez-wifi" })]),
+    details("Hotspot des Beamers", [ap, el("div", { id: "ez-hotspot" })]),
+    details("Zugang und Castcode", [el("div", { id: "ez-access" })]),
+    details("Rechte des Moderators", [el("p", { className: "note", textContent:
+      "Was ein Gerät darf, das am Beamer Moderator ist (in der EZCast- oder eDisplay-App)." }), el("div", { id: "ez-rights" })]),
+    details("Anmeldung an der Acer-Weboberfläche", [login]),
+    details("Passwort der EZCast-Oberfläche", [el("p", { className: "warn", id: "ez-default-pw" }), ezpw]),
+    details("E-Mail-Alarm", [mail]),
+    details("Crestron", [cres]),
+    details("HDMI-CEC und SNMP", [el("div", { id: "ez-misc" })]),
+    details("Firmware des EZCast-Moduls", [fw, el("div", { id: "ez-ota" })]),
+    details("System", [sys]));
 }
+
+// ---- settings of the EZCast module (read on demand, admin.rs ez_settings) ---------------------
+const ez = { data: null, loading: false, failed: false };
+const PRODUCTS = { 1: "EZMusic", 2: "EZCast", 3: "EZWiLAN", 4: "EZCast Pro", 5: "EZCast Pro WiLAN", 6: "EZCast Pro Box", 9: "Box, nur LAN" };
+const RIGHTS = [["conferent", "Präsentation steuern (Aufteilung, Trennen)"], ["airview", "AirView: Bild vom Beamer ansehen"],
+  ["airoptions", "Einstellungen ändern"], ["internetenables", "Internetzugang ändern"], ["passwordhide", "Passwort ein-/ausblenden"],
+  ["reloadsystem", "Neu starten"], ["devicemanager", "Geräteverwaltung"], ["networksetup", "Netzwerk einrichten"]];
+const EZ_KEYS = [["hide_ssid", "Hotspot-Name verstecken"], ["max_clients", "Höchstzahl Verbindungen"],
+  ["channel24", "Hotspot-Kanal 2,4 GHz"], ["band5g", "Hotspot 5 GHz"], ["passcode", "Castcode"],
+  ["internet", "Internetzugang über den Hotspot"], ["miracode", "Miracode"], ["psk_hide", "Hotspot-Passwort ausblenden"],
+  ["router_only", "Nur über Router"], ["airview", "AirView"], ["snmp", "SNMP"], ["cec", "HDMI-CEC"],
+  ["host_rights", "Rechte des Moderators"], ["wifi_dhcp", "IP-Adresse im WLAN"], ["ota_server", "Update-Server"]];
+const SIMPLE = ["hide_ssid", "max_clients", "passcode", "internet", "miracode", "psk_hide", "router_only", "airview", "snmp"];
+// 5 GHz channels by country index (setting.js)
+function channels5g(i) {
+  const low = [36, 40, 44, 48], high = [149, 153, 157, 161, 165];
+  if ([1, 2, 5, 9, 10, 18, 21, 22, 24].includes(i)) return low.concat(high);
+  if ([3, 11, 12, 13].includes(i)) return high;
+  if (i === 4) return [36, 40, 44, 48, 52, 56, 60, 100, 104, 108, 112, 116, 132, 136, 140];
+  if (i === 7) return [36, 40, 44, 48, 52, 56, 60, 64, 100, 104, 108, 112, 116, 120, 124, 128, 132, 136, 140];
+  if (i === 8) return [36, 40, 44, 48, 149, 153, 157, 161];
+  if (i === 23) return [56, 60, 64, 149, 153, 157, 161, 165];
+  return low;
+}
+
+async function loadEz() {
+  ez.loading = true;
+  $("ez-missing").textContent = "Lese die Einstellungen des EZCast-Moduls …";
+  const r = await api("ez_read", "", null, null, $("ez-warn"));
+  ez.loading = false;
+  if (!r) { ez.failed = true; $("ez-missing").textContent = ""; return; }
+  ez.failed = false;
+  showEz(r.data);
+}
+$("ez-reload").onclick = () => { ez.failed = false; loadEz(); };
+
+function ezOut(id) {
+  let o = $(id + "-msg");
+  if (!o) { o = el("p", { className: "note", id: id + "-msg", role: "status" }); $(id).after(o); }
+  return o;
+}
+async function ezSet(key, fields, question, out) {
+  const r = await api("ez_set", key, fields, question, out);
+  if (!r) return false;
+  showEz(r.data);
+  const back = key.startsWith("right:") ? (r.data.host_rights ? (r.data.host_rights[key.slice(6)] ? "1" : "0") : null)
+             : SIMPLE.includes(key) ? String(r.data[key]) : null;
+  out.textContent = back !== null && back !== String(fields.v) ? "Gesendet, aber das EZCast-Modul meldet weiter den alten Wert." : "Übernommen.";
+  return true;
+}
+function sel(options, current) {
+  return el("select", {}, options.map(([v, l]) => el("option", { value: String(v), textContent: l, selected: String(v) === String(current) })));
+}
+function ezRow(label, ...controls) { return el("div", { className: "setting" }, [el("span", { textContent: label }), ...controls]); }
+// a select that is saved when changed; goes back if the change is cancelled or fails
+function ezChoice(box, label, key, options, current, question) {
+  const s = sel(options, current);
+  s.onchange = async () => { if (!await ezSet(key, { v: s.value }, question || null, ezOut(box))) s.value = String(current); };
+  return ezRow(label, s);
+}
+const YESNO = [["1", "Ja"], ["0", "Nein"]];
+const ONOFF = [["1", "An"], ["0", "Aus"]];
+function note(text) { return el("p", { className: "note small", textContent: text }); }
+
+function showEz(d) {
+  ez.data = d;
+  const has = k => d[k] !== null && d[k] !== undefined;
+  const put = (id, nodes) => { if ($(id)) $(id).replaceChildren(el("div", { className: "ez-group" }, nodes)); };
+
+  // hotspot
+  const hs = [];
+  if (has("hide_ssid")) hs.push(ezChoice("ez-hotspot", "Hotspot-Name verstecken", "hide_ssid", YESNO, d.hide_ssid,
+    "Der Hotspot des Beamers startet dafür neu; wer gerade darüber verbunden ist, fliegt raus. Weiter?"));
+  if (has("max_clients")) {
+    const opts = [32, 40, 48, 56, 64].map(n => [String(n), n + " Geräte"]);
+    if (!opts.some(o => o[0] === String(d.max_clients))) opts.unshift([String(d.max_clients), d.max_clients + " Geräte"]);
+    hs.push(ezChoice("ez-hotspot", "Höchstzahl gleichzeitiger Verbindungen", "max_clients", opts, d.max_clients));
+    hs.push(note("Mehr als 32 Geräte: jedes bekommt weniger Bandbreite."));
+  }
+  const auto = Array.isArray(d.auto_channel) ? d.auto_channel : [];
+  if (has("channel24")) {
+    const locked = d.sta_band === 2;
+    const ch = sel([["0", "Auto" + (auto[0] ? " (zurzeit " + auto[0] + ")" : "")],
+      ...Array.from({ length: 13 }, (_, i) => [String(i + 1), "Kanal " + (i + 1)])], d.channel24.channel);
+    const bw = sel([["0", "40 MHz"], ["1", "20 MHz"]], d.channel24.bw);
+    [ch, bw].forEach(x => x.disabled = locked);
+    hs.push(ezRow("Hotspot 2,4 GHz", ch, bw, button("Übernehmen", false, locked, () =>
+      ezSet("channel24", { v: ch.value, bw: bw.value }, "Hotspot-Kanal ändern? Der Hotspot startet dafür neu.", ezOut("ez-hotspot")))));
+    if (locked) hs.push(note("Der Beamer hängt per WLAN im 2,4-GHz-Band; der Hotspot nimmt dann dessen Kanal."));
+  }
+  if (has("band5g") && has("countries5g")) {
+    const locked = d.sta_band === 1;
+    const country = sel(d.countries5g.map((n, i) => [String(i), n]), d.band5g.country);
+    const ch = el("select");
+    const fillCh = () => ch.replaceChildren(...[["0", "Auto" + (auto[1] ? " (zurzeit " + auto[1] + ")" : "")],
+      ...channels5g(Number(country.value)).map(c => [String(c), "Kanal " + c])]
+      .map(([v, l]) => el("option", { value: v, textContent: l, selected: v === String(d.band5g.channel) })));
+    country.onchange = fillCh;
+    fillCh();
+    const bw = sel([["0", "40 MHz"], ["1", "20 MHz"]], d.band5g.bw);
+    [country, ch, bw].forEach(x => x.disabled = locked);
+    hs.push(ezRow("Hotspot 5 GHz", country, ch, bw, button("Übernehmen", false, locked, () =>
+      ezSet("band5g", { country: country.value, v: ch.value, bw: bw.value }, "5-GHz-Einstellung des Hotspots ändern? Der Hotspot startet dafür neu.", ezOut("ez-hotspot")))));
+    if (locked) hs.push(note("Der Beamer hängt per WLAN im 5-GHz-Band; der Hotspot nimmt dann dessen Kanal."));
+  }
+  put("ez-hotspot", hs);
+
+  // access
+  const ac = [];
+  if (has("passcode")) {
+    const mode = sel([["0", "Aus"], ["1", "Zufällig (wechselt)"], ["2", "Fester Code"]], d.passcode);
+    const code = el("input", { type: "text", inputMode: "numeric", maxLength: 4, placeholder: "0000", ariaLabel: "Castcode",
+      value: d.passcode === 2 && d.passcode_value ? d.passcode_value : "" });
+    code.hidden = mode.value !== "2";
+    mode.onchange = () => code.hidden = mode.value !== "2";
+    ac.push(ezRow("Castcode", mode, code, button("Übernehmen", false, false, () =>
+      ezSet("passcode", { v: mode.value, code: code.value.trim() }, "Castcode ändern? Wer sich mit der EZCast- oder eDisplay-App verbindet, braucht dann den neuen Code.", ezOut("ez-access")))));
+    ac.push(note("Den Code fragt die EZCast- bzw. eDisplay-App beim Verbinden ab." +
+      (d.passcode && d.passcode_value ? " Aktueller Code: " + d.passcode_value + "." : "")));
+  }
+  if (has("miracode")) ac.push(ezChoice("ez-access", "Miracode", "miracode", ONOFF, d.miracode));
+  if (has("internet")) ac.push(ezChoice("ez-access", "Internetzugang über den Hotspot", "internet",
+    [["0", "Alle Verbundenen"], ["1", "Nur wer gerade präsentiert"], ["2", "Niemand"]], d.internet,
+    "Internetzugang für Geräte am Hotspot ändern?"));
+  if (has("psk_hide")) ac.push(ezChoice("ez-access", "Hotspot-Passwort auf dem Beamerbild ausblenden", "psk_hide", YESNO, d.psk_hide));
+  if (has("router_only") && d.router_only_enable !== 0) ac.push(ezChoice("ez-access", "Nur über den Router verbinden (keine Direktverbindung zum Hotspot)",
+    "router_only", ONOFF, d.router_only, "Verbindungsart ändern? Geräte, die direkt am Hotspot hängen, können dann getrennt werden."));
+  put("ez-access", ac.length ? ac : [note("Das EZCast-Modul antwortet auf keine dieser Einstellungen.")]);
+
+  // rights of the moderator
+  put("ez-rights", has("host_rights")
+    ? RIGHTS.map(([k, l]) => ezChoice("ez-rights", l, "right:" + k, [["1", "Erlaubt"], ["0", "Gesperrt"]], d.host_rights[k] ? "1" : "0"))
+    : [note("Das EZCast-Modul antwortet nicht auf diese Abfrage.")]);
+
+  // AirView
+  const av = [];
+  if (has("airview")) av.push(ezChoice("ez-airview", "AirView", "airview", ONOFF, d.airview));
+  if (has("host_rights") && d.host_rights.airview_rate !== null) {
+    const rates = [["5000", "alle 5 s"], ["15000", "alle 15 s"], ["30000", "alle 30 s"], ["60000", "jede Minute"], ["0", "nur auf Abruf"]];
+    const cur = rates.some(r => r[0] === String(d.host_rights.airview_rate)) ? d.host_rights.airview_rate : "0";
+    av.push(ezChoice("ez-airview", "Bild in der App erneuern", "airview_rate", rates, cur));
+  }
+  put("ez-airview", av);
+
+  // HDMI-CEC and SNMP
+  const misc = [];
+  if (has("cec")) {
+    const cec = sel(ONOFF, d.cec.cec), audio = sel(ONOFF, d.cec.audio);
+    misc.push(ezRow("HDMI-CEC", cec), ezRow("Ton über HDMI", audio),
+      el("div", { className: "buttons" }, [button("Übernehmen", false, false, () => ezSet("cec", { v: cec.value, audio: audio.value }, null, ezOut("ez-misc")))]));
+  }
+  if (has("snmp")) misc.push(ezChoice("ez-misc", "SNMP", "snmp", ONOFF, d.snmp,
+    "SNMP ein- oder ausschalten? Benutzer für SNMPv3 legt die Firmware nur über eine Seite an, die ihr fehlt."));
+  put("ez-misc", misc.length ? misc : [note("Das EZCast-Modul antwortet auf keine dieser Einstellungen.")]);
+
+  // IP address in the Wi-Fi
+  if (has("wifi_dhcp")) {
+    const ip = d.wifi_ip || {};
+    const f = form("f-wifiip", [["dhcp", "Adresse automatisch beziehen (DHCP)", "checkbox"], ["ip", "IP-Adresse"],
+      ["mask", "Netzmaske"], ["gateway", "Gateway"], ["dns1", "DNS-Server"], ["dns2", "Zweiter DNS-Server (optional)"]], (f, out) => [
+      button("Speichern", false, false, () => ezSet("wifi_ip", values(f), "IP-Einstellung des Beamers im WLAN ändern? Bei falschen Werten ist er über das WLAN nicht mehr erreichbar.", out))]);
+    fill(f, Object.assign({ dhcp: d.wifi_dhcp === 1 ? "1" : "0" }, ip));
+    $("ez-wifi").replaceChildren(f);
+  } else if ($("ez-wifi")) {
+    $("ez-wifi").replaceChildren(note("Das EZCast-Modul antwortet nicht auf diese Abfrage."));
+  }
+
+  // password of the EZCast pages
+  $("ez-default-pw").textContent = d.default_password === 1
+    ? "Die EZCast-Oberfläche hat noch das Werks-Passwort; jeder im Netz kann sie damit bedienen." : "";
+
+  // firmware source
+  if (has("ota_server")) {
+    const input = el("input", { type: "text", value: d.ota_server, placeholder: "leer = Server des Herstellers", ariaLabel: "Update-Server" });
+    input.style.flex = "2"; input.style.width = "auto";
+    put("ez-ota", [el("h3", { className: "admin-gap", textContent: "Update-Server (nur für Fachleute)" }),
+      note("Von hier lädt das EZCast-Modul seine Firmware. Eine falsche Adresse kann ein manipuliertes Update einspielen."),
+      ezRow("Adresse", input, button("Ändern", false, false, () => {
+        if (prompt("Die Firmware-Quelle des Beamers ändern? Zum Bestätigen ÄNDERN eintippen:") !== "ÄNDERN") return;
+        ezSet("ota_server", { v: input.value.trim() }, null, ezOut("ez-ota"));
+      }))]);
+  }
+
+  const missing = EZ_KEYS.filter(([k]) => !has(k) || (k === "band5g" && !has("countries5g"))).map(([, l]) => l);
+  $("ez-missing").textContent = missing.length
+    ? "Auf diese Abfragen antwortet die Firmware nicht, darum fehlen sie: " + missing.join(", ") + "." : "";
+  if (lastStatus) showAdmin(lastStatus);
+}
+
 function showAdmin(data) {
+  if (!ADMIN) return;
   const a = data.admin;
-  const on = data.projector.power === "on" && a;
-  $("a-sec").hidden = !on;
-  if (!on) return;
+  const on = data.projector.power === "on";
+  $("a-off").hidden = on;
+  $("a-on").hidden = !on;
+  $("v-off").hidden = on;
+  $("v-body").hidden = !on;
+  if (!on) { ez.data = null; ez.failed = false; return; }
   if (!$("a-body").firstChild) buildAdmin();
-  const ez = a.ezcast || {};
-  $("a-info").replaceChildren(rows([["EZCast-Firmware", ez.firmware], ["Chip", ez.chip], ["Gerätename", ez.name],
-    ["Ausgabe", ez.resolution], ["Hotspot", ez.soft_ap], ["Verbundene Geräte", ez.connections],
-    ["LAN-Kabel", ez.lan_cable === undefined ? "" : ez.lan_cable ? "verbunden" : "nicht verbunden"],
-    ["WLAN", ez.wifi === undefined ? "" : ez.wifi || "nicht verbunden"]]));
+  if (!ez.data && !ez.loading && !ez.failed) loadEz();
+  if (!a) { $("a-info").replaceChildren(el("p", { className: "note", textContent: "Wird gelesen …" })); return; }
+  const ezc = a.ezcast || {};
+  const d = ez.data || {};
+  $("a-info").replaceChildren(rows([["EZCast-Firmware", ezc.firmware], ["Chip", ezc.chip], ["Gerätename", ezc.name],
+    ["Produkt", PRODUCTS[d.product] || ""], ["Ausgabe", ezc.resolution], ["Hotspot", d.ap_ssid || ezc.soft_ap],
+    ["Verbundene Geräte", ezc.connections],
+    ["LAN-Kabel", ezc.lan_cable === undefined ? "" : ezc.lan_cable ? "verbunden" : "nicht verbunden"],
+    ["WLAN", ezc.wifi === undefined ? "" : ezc.wifi || "nicht verbunden"], ["Adresse im WLAN", d.wlan0_ip]]));
   const acer = a.acer || {};
   const once = (key, id, v) => { if (v && !filled[key]) { fill($(id), v); filled[key] = true; } };
   once("lan", "f-lan", acer.lan && Object.assign({}, acer.lan, { dhcp: acer.lan.dhcp }));
@@ -549,6 +813,26 @@ function showAdmin(data) {
   once("mail", "f-mail", acer.email && Object.assign({}, acer.email,
     Object.fromEntries((acer.email.alerts || []).map((x, i) => ["a" + i, x]))));
 }
+
+// ---- AirView: picture of what the projector shows ---------------------------------------------
+let airviewTimer = null;
+async function loadAirview() {
+  try {
+    const r = await fetch("/api/airview.jpg?" + Date.now(), { cache: "no-store" });
+    if (!r.ok) { $("v-msg").textContent = await r.text(); return; }
+    const img = $("v-img");
+    if (img.src.startsWith("blob:")) URL.revokeObjectURL(img.src);
+    img.src = URL.createObjectURL(await r.blob());
+    img.hidden = false;
+    $("v-msg").textContent = "";
+  } catch (e) { $("v-msg").textContent = "Keine Verbindung zum Server"; }
+}
+$("v-get").onclick = loadAirview;
+$("v-auto").onchange = () => {
+  clearInterval(airviewTimer);
+  airviewTimer = $("v-auto").checked ? setInterval(loadAirview, 5000) : null;
+  if (airviewTimer) loadAirview();
+};
 
 function showReceiver(r) {
   const body = $("r-body");

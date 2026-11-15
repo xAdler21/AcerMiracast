@@ -202,12 +202,225 @@ pub fn read(host: &str) -> Value {
     json!({"ezcast": ez, "acer": acer})
 }
 
+// ---- settings of the EZCast module ------------------------------------------------------------
+// The "Device Management" commands of setting.js and the admin pages of main.js (WEB_FUNCTIONS.md
+// B.4-B.6, E.7). No shipped page of this firmware calls them, so each one is read first: what
+// does not answer with a sensible value is reported as null and the panel leaves it out.
+
+/// Rights of the moderator (host_val), in the order the module lists them.
+const HOST_RIGHTS: [&str; 8] =
+    ["conferent", "airview", "airoptions", "internetenables", "passwordhide", "reloadsystem", "devicemanager", "networksetup"];
+
+fn answer(host: &str, fields: &[&str]) -> Option<String> {
+    let r = wifi_info(host, fields).ok()?;
+    let r = r.trim();
+    (!r.is_empty() && !r.starts_with('<')).then(|| r.to_string())
+}
+
+fn lines(s: &str) -> Vec<&str> {
+    s.lines().map(str::trim).filter(|l| !l.is_empty()).collect()
+}
+
+/// all lines as numbers, or None
+fn numbers(host: &str, fields: &[&str]) -> Option<Vec<i64>> {
+    let s = answer(host, fields)?;
+    let v: Option<Vec<i64>> = lines(&s).iter().map(|l| l.parse().ok()).collect();
+    v.filter(|v| !v.is_empty())
+}
+
+fn number(host: &str, fields: &[&str]) -> Value {
+    numbers(host, fields).map(|v| json!(v[0])).unwrap_or(Value::Null)
+}
+
+/// Reads every setting of the EZCast module the panel can change. Secrets are not read.
+/// Slow (one request each): only on demand.
+pub fn ez_settings(host: &str) -> Value {
+    let mut s = json!({});
+    s["hide_ssid"] = number(host, &["get_ignoressid"]);
+    s["max_clients"] = number(host, &["get_max_num"]);
+    s["sta_band"] = number(host, &["get_ProboxConnectStatus"]); // 1 = STA on 5 GHz, 2 = on 2.4 GHz
+    s["channel24"] = numbers(host, &["get_softap_channel"]).filter(|v| v.len() >= 2).map(|v| json!({"channel": v[0], "bw": v[1]})).unwrap_or(Value::Null);
+    s["auto_channel"] = numbers(host, &["get_auto_channel_val"]).map(|v| json!(v)).unwrap_or(Value::Null);
+    s["countries5g"] = answer(host, &["get_5G_country"])
+        .map(|t| lines(&t).iter().map(|l| l.to_string()).collect::<Vec<_>>())
+        .filter(|l| l.len() >= 2)
+        .map(|l| json!(l))
+        .unwrap_or(Value::Null);
+    s["band5g"] = numbers(host, &["get_5G_initvalue"]).filter(|v| v.len() >= 3)
+        .map(|v| json!({"country": v[0], "channel": v[1], "bw": v[2]})).unwrap_or(Value::Null);
+    s["passcode"] = number(host, &["get_passcode"]);
+    s["passcode_value"] = answer(host, &["get_pass_code_val"]).filter(|v| v.chars().all(|c| c.is_ascii_digit()))
+        .map(|v| json!(format!("{:0>4}", v))).unwrap_or(Value::Null);
+    s["internet"] = number(host, &["get_internet_access_control"]);
+    s["miracode"] = number(host, &["get_miracode"]);
+    s["psk_hide"] = number(host, &["1", "get", "PSK_hide", "CONFNAME_WR", ""]);
+    s["router_only_enable"] = number(host, &["ROUTER_ONLY_ENABLE"]);
+    s["router_only"] = number(host, &["get_routeronly"]);
+    s["airview"] = number(host, &["get_airview"]);
+    s["snmp"] = number(host, &["get_snmp"]);
+    s["cec"] = numbers(host, &["get_hdmicec"]).filter(|v| v.len() >= 2).map(|v| json!({"cec": v[0], "audio": v[1]})).unwrap_or(Value::Null);
+    // host_val: conferent, airview, airoptions, internetenables, passwordhide, reloadsystem,
+    // devicemanager, networksetup, airview_rate
+    s["host_rights"] = answer(host, &["1", "host_val", "conferent", "CONFNAME_WR", ""])
+        .map(|t| t.split(',').map(|x| x.trim().to_string()).collect::<Vec<_>>())
+        .filter(|v| v.len() >= HOST_RIGHTS.len() && v[..HOST_RIGHTS.len()].iter().all(|x| x == "0" || x == "1"))
+        .map(|v| {
+            let mut m = json!({});
+            for (i, k) in HOST_RIGHTS.iter().enumerate() {
+                m[*k] = json!(v[i] == "1");
+            }
+            m["airview_rate"] = json!(v.get(8).and_then(|r| r.parse::<i64>().ok()));
+            m
+        })
+        .unwrap_or(Value::Null);
+    s["wifi_dhcp"] = number(host, &["getWiFiAutomatic"]);
+    s["wifi_ip"] = answer(host, &["getWiFiSetting_Val"]).map(|t| {
+        let l = lines(&t);
+        let g = |i: usize| l.get(i).map(|x| x.to_string()).unwrap_or_default();
+        json!({"ip": g(0), "gateway": g(1), "mask": g(2), "dns1": g(3), "dns2": g(4)}) // read order: ip, gw, mask
+    }).unwrap_or(Value::Null);
+    s["default_password"] = number(host, &["compare_psk_modfiy"]);
+    s["ota_server"] = answer(host, &["get_otaserver_path"]).map(|p| json!(if p == "nil" { String::new() } else { p })).unwrap_or(Value::Null);
+    s["product"] = number(host, &["EZMUSIC_ENABLE"]);
+    s["wlan0_ip"] = answer(host, &["get_wlan0_ip"]).map(|v| json!(v)).unwrap_or(Value::Null);
+    s["ap_ssid"] = answer(host, &["get_ap_ssid"]).map(|v| json!(v)).unwrap_or(Value::Null);
+    s
+}
+
+fn flag01(v: &str) -> Result<&str, String> {
+    if v == "0" || v == "1" { Ok(v) } else { Err("Wert muss 0 oder 1 sein".into()) }
+}
+
+fn int_in(v: &str, range: std::ops::RangeInclusive<i64>, what: &str) -> Result<String, String> {
+    v.trim().parse::<i64>().ok().filter(|n| range.contains(n)).map(|n| n.to_string())
+        .ok_or_else(|| format!("{what}: {} bis {}", range.start(), range.end()))
+}
+
+/// One setting of the EZCast module (`ez_settings` key) set to `f["v"]` (and further fields).
+fn ez_set(host: &str, key: &str, f: &Value) -> Result<(), String> {
+    let v = field(f, "v");
+    let send = |fields: &[&str]| wifi_info(host, fields).map(|_| ());
+    match key {
+        "hide_ssid" => send(&[&format!("{}set_ignoressid", flag01(v)?)]),
+        "max_clients" => send(&[&format!("{}set_max_num", int_in(v, 32..=64, "Höchstzahl")?)]),
+        "channel24" => {
+            let ch = int_in(v, 0..=13, "Kanal")?;
+            let bw = int_in(field(f, "bw"), 0..=1, "Bandbreite")?;
+            send(&[&ch, &bw, "set_channel", ""])
+        }
+        "band5g" => {
+            let country = int_in(field(f, "country"), 0..=40, "Land")?;
+            let ch = int_in(v, 0..=165, "Kanal")?;
+            let bw = int_in(field(f, "bw"), 0..=1, "Bandbreite")?;
+            send(&[&country, &ch, &bw, "set_5G_country", ""])
+        }
+        "passcode" => match v {
+            "0" | "1" => send(&[v, "set_passcode", ""]),
+            "2" => {
+                let code = field(f, "code");
+                if code.len() != 4 || !code.chars().all(|c| c.is_ascii_digit()) {
+                    return Err("Der Code hat genau 4 Ziffern".into());
+                }
+                send(&["2", code, "set_passcode", ""])
+            }
+            _ => Err("Unbekannte Einstellung".into()),
+        },
+        "internet" => send(&[&int_in(v, 0..=2, "Internetzugang")?, "set_internet_access_control", ""]),
+        "miracode" => send(&[flag01(v)?, "set_miracode", ""]),
+        "psk_hide" => send(&[flag01(v)?, "set", "PSK_hide", "CONFNAME_WR", ""]),
+        "router_only" => send(&[flag01(v)?, "set_routeronly", ""]),
+        "airview" => send(&[flag01(v)?, "set_airview", ""]),
+        "airview_rate" => send(&[&int_in(v, 0..=600_000, "Abstand")?, "set", "airview_rate", "CONFNAME_WR", ""]),
+        "snmp" => send(&[flag01(v)?, "set_snmp", ""]),
+        "cec" => send(&[flag01(v)?, flag01(field(f, "audio"))?, "set_hdmicec", ""]),
+        k if k.starts_with("right:") => {
+            let right = &k[6..];
+            if !HOST_RIGHTS.contains(&right) {
+                return Err("Unbekanntes Recht".into());
+            }
+            send(&[flag01(v)?, "set", right, "CONFNAME_WR", ""])
+        }
+        "wifi_ip" => {
+            if field(f, "dhcp") == "1" {
+                return send(&["setWiFiAutomatic"]);
+            }
+            let dns2 = field(f, "dns2");
+            let dns2 = if dns2.is_empty() { String::new() } else { ipv4(dns2, "DNS 2")? };
+            let (ip, mask, gw, dns1) = (ipv4(field(f, "ip"), "IP-Adresse")?, ipv4(field(f, "mask"), "Netzmaske")?,
+                                        ipv4(field(f, "gateway"), "Gateway")?, ipv4(field(f, "dns1"), "DNS 1")?);
+            // write order: ip, mask, gateway (the read order differs)
+            let r = wifi_info(host, &[&ip, &mask, &gw, &dns1, &dns2, "writeWiFiManualInfo", ""])?;
+            if r.trim() == "-1" || r.trim() == "0" {
+                return Err("Das EZCast-Modul lehnt die Adressen ab".into());
+            }
+            send(&["setWiFiAuto_off"])
+        }
+        "ez_password" => {
+            let pw = field(f, "password");
+            if !(6..=64).contains(&pw.len()) || !pw.chars().all(|c| c.is_ascii_alphanumeric()) {
+                return Err("Passwort: 6 bis 64 Buchstaben oder Ziffern".into());
+            }
+            let r = wifi_info(host, &["admin", pw, "modify_usr_password", ""])?;
+            if r.trim() == "1" { Ok(()) } else { Err("Das EZCast-Modul hat das Passwort nicht übernommen".into()) }
+        }
+        "ota_server" => {
+            if v.len() > 200 || v.chars().any(|c| c.is_control() || c.is_whitespace()) {
+                return Err("Adresse: höchstens 200 Zeichen, ohne Leerzeichen".into());
+            }
+            send(&[&format!("{v}set_otaserver_path")])
+        }
+        _ => Err("Unbekannte Einstellung".into()),
+    }
+}
+
+/// Picture of what the projector shows right now (AirView, cbv.html). Only while AirView is on.
+pub fn airview(host: &str) -> Result<Vec<u8>, String> {
+    get(host, &format!("/cgi-bin/htmlsetting_snapshot.cgi?timeStamp={}&type=get_airview", millis()))?;
+    match http::request("GET", &format!("http://{host}:8080/tmp/snapshot.jpg?r{}", millis()), b"", "", T) {
+        Ok((200, body)) if body.starts_with(&[0xFF, 0xD8]) => Ok(body),
+        Ok(_) => Err("Kein Bild: AirView ist aus oder liefert nichts".into()),
+        Err(_) => Err("EZCast-Modul antwortet nicht".into()),
+    }
+}
+
 // ---- commands ------------------------------------------------------------------------------
 
 /// Runs one admin command. `f` holds the fields of forms. Returns data for the panel, if any.
 pub fn command(host: &str, action: &str, value: &str, f: &Value) -> Result<Value, String> {
     let done = Ok(Value::Null);
     match action {
+        "ez_read" => Ok(ez_settings(host)),
+        "ez_set" => {
+            ez_set(host, value, f)?;
+            thread::sleep(Duration::from_millis(500));
+            Ok(ez_settings(host)) // read back: shows what the module really took
+        }
+        "wifi_add" => {
+            let ssid = field(f, "ssid");
+            let psk = field(f, "psk");
+            if ssid.is_empty() || ssid.len() > 32 {
+                return Err("Netzname: 1 bis 32 Zeichen".into());
+            }
+            match field(f, "security") {
+                "open" => post(host, "/cgi-bin/add_network_POST.cgi", &format!("psk=&ssid={}&ssid_index=&AuthenType=2", urlencode(ssid)))?,
+                "wpa" => {
+                    if !(8..=63).contains(&psk.len()) {
+                        return Err("Das WLAN-Passwort hat 8 bis 63 Zeichen".into());
+                    }
+                    post(host, "/cgi-bin/add_network_POST.cgi", &format!("psk={}&ssid={}&ssid_index=&AuthenType=0", urlencode(psk), urlencode(ssid)))?
+                }
+                eap @ ("peap" | "mschap") => {
+                    let identity = field(f, "identity");
+                    if identity.is_empty() || psk.is_empty() || [ssid, psk, identity].iter().any(|x| x.contains('\n')) {
+                        return Err("Benutzername und Passwort fehlen".into());
+                    }
+                    let index = if eap == "peap" { "2" } else { "4" };
+                    wifi_info(host, &[ssid, psk, identity, "0", index, "add_802XEPA_network", ""])?
+                }
+                _ => return Err("Unbekannte Verschlüsselung".into()),
+            };
+            done
+        }
         // -- conference control (who is on the screen) --
         "conf" => {
             let ip = ipv4(field(f, "ip"), "Teilnehmer")?;
