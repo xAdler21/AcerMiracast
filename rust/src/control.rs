@@ -28,7 +28,7 @@ use cbc::cipher::block_padding::Pkcs7;
 use cbc::cipher::{BlockDecryptMut, BlockEncryptMut, KeyIvInit};
 use serde_json::Value;
 
-use crate::hub::log;
+use crate::hub::{Guest, Hub, log};
 
 pub const PORT: u16 = 63630;
 const FIXED_KEY: &[u8; 16] = b"AM2feY5ysJAA4oAM";
@@ -114,7 +114,7 @@ pub struct Control {
 
 impl Control {
     /// Connects, introduces itself as `name` and waits until the projector assigned a role.
-    pub fn open(host: &str, name: &str) -> io::Result<Control> {
+    pub fn open(host: &str, name: &str, hub: Arc<Hub>) -> io::Result<Control> {
         let address: SocketAddr = format!("{host}:{PORT}")
             .parse()
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "projector_host must be an IP address"))?;
@@ -130,7 +130,7 @@ impl Control {
         let (tx, rx) = mpsc::channel();
         {
             let shared = shared.clone();
-            thread::spawn(move || read_loop(reader, shared, tx));
+            thread::spawn(move || read_loop(reader, shared, tx, hub));
         }
         let name = name.replace(['"', '\\'], "");
         let first = format!(
@@ -227,6 +227,25 @@ impl Control {
         );
     }
 
+    /// Remote-control key, as the Acer software's key pad sends it ("1:<code>"):
+    /// 10 up, 11 down, 12 left, 13 right, 14 OK, 15 back.
+    pub fn send_key(&self, code: u32) -> io::Result<()> {
+        self.shared.send(&frame(format!("1:{code}").as_bytes()))
+    }
+
+    /// Answer to another presenter's request for the screen (we are the host).
+    pub fn answer_guest(&mut self, ip: &str, allow: bool) -> io::Result<()> {
+        let params = serde_json::json!({"ip_address": ip, "result": if allow { "allow" } else { "deny" }});
+        self.call("common.answer_request_stream", Some(&params.to_string()))?;
+        Ok(())
+    }
+
+    /// Ends every presentation on the projector (host only).
+    pub fn disconnect_all(&mut self) -> io::Result<()> {
+        self.call("common.disconnect_all", None)?;
+        Ok(())
+    }
+
     pub fn alive(&self) -> bool {
         self.shared.alive.load(Ordering::Relaxed)
     }
@@ -245,7 +264,7 @@ impl Drop for Control {
     }
 }
 
-fn read_loop(mut stream: TcpStream, shared: Arc<Shared>, events: Sender<Event>) {
+fn read_loop(mut stream: TcpStream, shared: Arc<Shared>, events: Sender<Event>, hub: Arc<Hub>) {
     while shared.alive.load(Ordering::Relaxed) {
         let data = match read_frame(&mut stream) {
             Ok(d) => d,
@@ -281,8 +300,16 @@ fn read_loop(mut stream: TcpStream, shared: Arc<Shared>, events: Sender<Event>) 
             if let Some(id) = id {
                 shared.answer(id);
             }
+            let param = |k: &str| value["params"][k].as_str().unwrap_or("").to_string();
             if method == "common.assign_role" {
                 let _ = events.send(Event::RoleAssigned);
+            } else if method.starts_with("common.ask_request_stream") {
+                let guest = Guest { name: param("hostname"), ip: param("ip_address"),
+                                    fullscreen: method.ends_with("_fullscreen") };
+                log(format!("projector: {} ({}) asks for the screen", guest.name, guest.ip));
+                hub.guest_asks(guest);
+            } else if method == "common.cancel_request_stream" {
+                hub.guest_gone(&param("ip_address"));
             } else {
                 log(format!("projector: control request {method}"));
             }

@@ -18,7 +18,17 @@ pub struct SessionInfo {
     pub video: String,
 }
 
+/// Another presenter (EZCast / eDisplay app) who asks the projector for the screen; the
+/// projector asks us, the current host, to allow or deny.
+#[derive(Clone)]
+pub struct Guest {
+    pub name: String,
+    pub ip: String,
+    pub fullscreen: bool,
+}
+
 pub struct Hub {
+    guests: Mutex<Vec<Guest>>,
     frame: Mutex<(u64, Option<Arc<Vec<u8>>>)>,
     cond: Condvar,
     session: Mutex<Option<SessionInfo>>,
@@ -30,6 +40,7 @@ pub struct Hub {
 impl Hub {
     pub fn new() -> Arc<Hub> {
         Arc::new(Hub {
+            guests: Mutex::new(Vec::new()),
             frame: Mutex::new((0, None)),
             cond: Condvar::new(),
             session: Mutex::new(None),
@@ -96,6 +107,21 @@ impl Hub {
 
     pub fn output(&self) -> String {
         self.output.lock().unwrap().clone()
+    }
+
+    // -- presenters waiting for the projector -------------------------------------------------
+    pub fn guest_asks(&self, guest: Guest) {
+        let mut g = self.guests.lock().unwrap();
+        g.retain(|x| x.ip != guest.ip);
+        g.push(guest);
+    }
+
+    pub fn guest_gone(&self, ip: &str) {
+        self.guests.lock().unwrap().retain(|x| x.ip != ip);
+    }
+
+    pub fn guests(&self) -> Vec<Guest> {
+        self.guests.lock().unwrap().clone()
     }
 
     pub fn request_idr(&self) {

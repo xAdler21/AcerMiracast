@@ -15,6 +15,7 @@
 #   SSID=...     override the SSID (default DIRECT-MC-<name>)
 #   RADIO=radio0 wifi-device to use
 #   REMOVE=1     remove the beacon again (no other arguments needed)
+#   P2P_ADDR=..  P2P device address to announce (the Wi-Fi Direct interface of install-p2p.sh)
 
 set -e
 
@@ -79,6 +80,9 @@ if [ -z "$MAC" ]; then
 		die "could not read the radio MAC address"
 	fi
 fi
+# With Wi-Fi Direct on the box (install-p2p.sh) the beacon names the real P2P device, so
+# Windows falls back to it when it cannot reach the receiver over the network.
+[ -n "$P2P_ADDR" ] && MAC="$P2P_ADDR"
 MAC_HEX="$(echo "$MAC" | tr -d ':' | tr 'A-F' 'a-f')"
 
 NAME_HEX="$(hexstr "$NAME")"
@@ -157,7 +161,7 @@ uci commit wireless
 wifi reload
 
 # remembered for beacon-status.sh
-printf 'NAME="%s"\nIP="%s"\n' "$NAME" "$IP" > /etc/mice-beacon.conf
+printf 'NAME="%s"\nIP="%s"\nP2P_ADDR="%s"\n' "$NAME" "$IP" "$P2P_ADDR" > /etc/mice-beacon.conf
 
 echo "Applied. Waiting for the radio ..."
 sleep 10

@@ -10,6 +10,7 @@
 //!   3. The source sends RTP/MPEG-TS (H.264) to our UDP port.
 //!   4. The H.264 goes to the projector (ezdisplay.rs), a JPEG preview to the panel.
 
+mod admin;
 mod control;
 mod ezdisplay;
 mod http;
@@ -20,7 +21,7 @@ mod session;
 mod ts;
 
 use std::io::Read;
-use std::net::{IpAddr, TcpListener, TcpStream};
+use std::net::{IpAddr, SocketAddr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -38,10 +39,12 @@ pub struct Config {
     pub projector_host: String,
     pub projector_stream_host: String,
     pub projector_model: String,
+    pub projector_mac: String,
     pub standby: bool,
     pub standby_font: String,
     pub wake_url: String,
     pub beacon_host: String,
+    pub wifi_direct: bool,
     pub picture_output: String,
     pub video_mode: String,
     pub video_width: u32,
@@ -69,10 +72,12 @@ impl Config {
             projector_host: s("projector_host", ""),
             projector_stream_host: s("projector_stream_host", ""),
             projector_model: s("projector_model", ""),
+            projector_mac: s("projector_mac", ""),
             standby: v.get("standby").and_then(Value::as_bool).unwrap_or(true),
             standby_font: s("standby_font", "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"),
             wake_url: s("wake_url", ""),
             beacon_host: s("beacon_host", ""),
+            wifi_direct: v.get("wifi_direct").and_then(Value::as_bool).unwrap_or(false),
             picture_output: s("picture_output", "ezdisplay"),
             video_mode: s("video_mode", "passthrough"),
             video_width: n("video_width", 1280),
@@ -199,28 +204,7 @@ impl Mice {
         match command {
             MICE_SOURCE_READY => {
                 log(format!("MICE {ip}: SOURCE_READY from '{name}', RTSP port {port}"));
-                let info = SessionInfo {
-                    source: name.clone(),
-                    ip: ip.to_string(),
-                    playing: false,
-                    started: Instant::now(),
-                    frames: 0,
-                    video: String::new(),
-                };
-                if let Err(busy) = self.hub.begin_session(info) {
-                    log(format!("MICE: busy with '{busy}', ignoring '{name}'"));
-                    return;
-                }
-                let stop = Arc::new(AtomicBool::new(false));
-                *self.current.lock().unwrap() = Some((ip, stop.clone()));
-                let me = self.clone();
-                thread::spawn(move || {
-                    log(format!("session start: '{name}' from {ip}"));
-                    let session = Session { source_ip: ip, rtsp_port: port, name, stop };
-                    session.run(&me.options, me.hub.clone(), me.output.clone());
-                    *me.current.lock().unwrap() = None;
-                    me.hub.end_session();
-                });
+                self.start_session(ip, port, name, ip.to_string(), None);
             }
             MICE_STOP_PROJECTION => {
                 log(format!("MICE {ip}: STOP_PROJECTION from '{name}'"));
@@ -232,6 +216,72 @@ impl Mice {
             }
             other => log(format!("MICE {ip}: command 0x{other:02x} ignored")),
         }
+    }
+
+    /// Connects to the source's RTSP port and runs the session; false if one is running.
+    fn start_session(self: Arc<Self>, ip: IpAddr, port: u16, name: String, shown_ip: String, punch: Option<SocketAddr>) -> bool {
+        let info = SessionInfo {
+            source: name.clone(),
+            ip: shown_ip,
+            playing: false,
+            started: Instant::now(),
+            frames: 0,
+            video: String::new(),
+        };
+        if let Err(busy) = self.hub.begin_session(info) {
+            log(format!("busy with '{busy}', ignoring '{name}'"));
+            return false;
+        }
+        let stop = Arc::new(AtomicBool::new(false));
+        *self.current.lock().unwrap() = Some((ip, stop.clone()));
+        thread::spawn(move || {
+            log(format!("session start: '{name}' from {ip}"));
+            let session = Session { source_ip: ip, rtsp_port: port, name, stop, punch };
+            session.run(&self.options, self.hub.clone(), self.output.clone());
+            *self.current.lock().unwrap() = None;
+            self.hub.end_session();
+        });
+        true
+    }
+}
+
+// ---- Wi-Fi Direct through the beacon box ------------------------------------------------------
+//
+// Without a network path to the VM, Windows connects to the box over Wi-Fi Direct. The box
+// (beacon/install-p2p.sh) is group owner, gives the laptop a fixed address and reports it in
+// http://<box>/p2p.json. The box forwards its TCP 7236 to the laptop's RTSP port and the
+// laptop's RTP (to the box, UDP 50000) to us. The router passes the box's packets to the VM
+// only as answers, so we connect out to the box and keep the UDP path open ourselves.
+
+fn wifi_direct(mice: Arc<Mice>, box_host: String, rtp_port: u16) {
+    let Ok(box_ip) = box_host.parse::<IpAddr>() else {
+        log(format!("wifi_direct: {box_host} is not an IP address"));
+        return;
+    };
+    log(format!("Wi-Fi Direct: watching {box_host} for connected laptops"));
+    let mut last: Option<(String, Instant)> = None;
+    loop {
+        thread::sleep(Duration::from_secs(2));
+        if mice.hub.session().is_some() {
+            continue;
+        }
+        let status = http::request("GET", &format!("http://{box_host}/p2p.json"), b"", "", Duration::from_secs(3))
+            .ok()
+            .filter(|(code, _)| *code == 200)
+            .and_then(|(_, body)| serde_json::from_slice::<Value>(&body).ok());
+        let peer = status.as_ref().and_then(|v| v["peer"].as_str()).unwrap_or("").to_string();
+        if peer.is_empty() {
+            last = None;
+            continue;
+        }
+        // one attempt per connected laptop, repeated every 15 s while it stays connected
+        if last.as_ref().is_some_and(|(p, t)| *p == peer && t.elapsed() < Duration::from_secs(15)) {
+            continue;
+        }
+        last = Some((peer.clone(), Instant::now()));
+        let name = status.as_ref().and_then(|v| v["name"].as_str()).filter(|n| !n.is_empty()).unwrap_or("Wi-Fi Direct").to_string();
+        log(format!("Wi-Fi Direct: '{name}' ({peer}) is connected to the box"));
+        mice.clone().start_session(box_ip, 7236, name, format!("{peer} (Wi-Fi Direct)"), Some(SocketAddr::new(box_ip, rtp_port)));
     }
 }
 
@@ -293,7 +343,7 @@ fn main() {
     });
 
     if a.http_port != 0 {
-        let monitor = panel::Monitor::start(config.clone(), hub.clone());
+        let monitor = panel::Monitor::start(config.clone(), hub.clone(), output.clone());
         if let Err(e) = panel::start(&a.bind, a.http_port, monitor, hub.clone()) {
             log(format!("web panel could not listen on port {}: {e}", a.http_port));
             std::process::exit(1);
@@ -302,6 +352,10 @@ fn main() {
     }
 
     let mice = Arc::new(Mice { hub, options, output, current: Mutex::new(None) });
+    if config.wifi_direct && !config.beacon_host.is_empty() {
+        let (mice, host, port) = (mice.clone(), config.beacon_host.clone(), a.rtp_port);
+        thread::spawn(move || wifi_direct(mice, host, port));
+    }
     let listener = TcpListener::bind((a.bind.as_str(), a.port)).unwrap_or_else(|e| {
         log(format!("cannot listen on port {}: {e}", a.port));
         std::process::exit(1);

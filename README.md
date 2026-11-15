@@ -28,6 +28,24 @@ The projector answers its streaming ports only inside its own subnet. The box (s
 relays them for the VM: `RECEIVER=10.21.0.232 PROJECTOR=10.1.34.179 sh install-relay.sh` on the
 box (DNAT+SNAT, only the VM's address), and `projector_stream_host` = box address in the config.
 
+### Wi-Fi Direct (laptop without a network path to the VM)
+
+Without WLAN, or from an isolated guest WLAN, Windows cannot reach the VM and falls back to
+Wi-Fi Direct with the device named in the beacon. `beacon/install-p2p.sh` (on the box,
+`RECEIVER=10.21.0.232 sh install-p2p.sh`) makes the box that device:
+
+- swaps `wpad-basic-mbedtls` for `hostapd-basic-mbedtls` + `wpa-supplicant-p2p` + `wpa-cli`
+- runs a Wi-Fi Direct group owner `p2p0` next to the beacon on channel 6 (service `acer-p2p`),
+  push button always armed, Wi-Fi Display element added as vendor element (the package has no
+  `CONFIG_WIFI_DISPLAY`); the beacon announces this device's address (`P2P_ADDR`)
+- gives the laptop `192.168.173.2` (no gateway, no DNS) and reports it in `http://<box>/p2p.json`
+- forwards box TCP 7236 (from the VM only) to the laptop's RTSP port, and the laptop's RTP
+  (UDP 50000 to the box) to the VM
+
+The router passes the box's packets to the VM only as answers, so the VM connects out: it polls
+`p2p.json`, connects to box:7236 and keeps the UDP path open by sending to box:50000
+(`"wifi_direct": true`). `REMOVE=1 sh install-p2p.sh` switches it off again.
+
 Windows keeps the MICE connection (TCP 7250) open and silent for the whole projection; closing
 it ends the projection, so it has no read timeout.
 
@@ -52,13 +70,27 @@ Settings in `/etc/acermiracast/config.json` (kept on update, new keys are added)
 | `projector_stream_host` | address for the streaming ports: the relaying box (empty = projector_host) |
 | `standby` | standby picture while nobody projects (default true; needs ffmpeg) |
 | `projector_control` | `acer_web`: switch to the LAN/WiFi input and show status via the projector's web page |
-| `wake_url` | Wake-on-LAN CGI on the box (projector off = not on the network) |
+| `projector_mac` | MAC of the projector: the VM sends the Wake-on-LAN packet itself (reaches the projector only while the router still knows its MAC; directed broadcasts are not routed) |
+| `wake_url` | Wake-on-LAN CGI on the box (projector off = not on the network); always used as well, it reaches the projector from inside its subnet |
 | `video_mode` | `passthrough` (default) or `transcode` |
 | `video_width`, `video_height`, `video_fps` | picture the projector takes (1280x720x30 on the Acer P5) |
 | `beacon_host` | IP of the beacon box |
+| `wifi_direct` | take Win+K connections that come over Wi-Fi Direct through the box (needs `install-p2p.sh` on the box) |
 
 Ports: TCP 8445 (panel), TCP 7250 and UDP 50000 (from the Windows device); the receiver connects
 out to the Windows device on TCP 7236 and to the projector on TCP 63630, 2425 and UDP 2425.
+
+The panel covers the projector's own web pages and the Acer eDisplay Pro functions that work
+with this firmware:
+
+- picture settings of the Acer control page (mode, brightness, contrast, gamma, colour
+  temperature, keystone, aspect, zoom, volume, projection, start screen, hide, freeze, eco, resync, reset)
+- remote-control keys and volume of the transmission (through the open projector connection),
+  presenters on the projector (split screen, moderator, disconnect), requests of other presenters
+- administration (`rust/src/admin.rs`): LAN, Wi-Fi client and hotspot of the EZCast module,
+  login of the Acer web pages, e-mail alerts, Crestron, EZCast firmware update, reboot, factory reset
+
+Passwords are never shown: the projector hands them out to anyone, the panel only sets new ones.
 
 Panel for the Plintus app: `http://10.21.0.232:8445/` in the hub under Einstellungen -> Beamer.
 

@@ -36,6 +36,32 @@
   .warn { color: var(--down); margin: 12px 0 0; }
   #message { min-height: 1.4em; margin: 12px 0 0; color: var(--down); }
   img { display: block; width: 100%; border-radius: 8px; background: #000; }
+  .groups { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); }
+  h3 { margin: 0 0 8px; font-size: .85rem; font-weight: 600; color: var(--muted); text-transform: uppercase;
+       letter-spacing: .04em; }
+  .setting { display: flex; align-items: center; gap: 8px; min-height: 44px; }
+  .setting > span { flex: 1; color: var(--muted); }
+  .setting button { min-width: 44px; padding: 8px 12px; }
+  .setting input, .setting select { font: inherit; color: var(--text); background: var(--bg);
+       border: 1px solid var(--border); border-radius: 8px; padding: 8px; }
+  .setting input { width: 5.5em; text-align: center; }
+  .setting select { min-width: 9em; }
+  .setting :disabled { opacity: .4; }
+  .pad { display: grid; grid-template-columns: repeat(3, 64px); gap: 8px; }
+  .pad button { min-width: 0; padding: 14px 0; }
+  .guest { border: 1px solid var(--accent); border-radius: 10px; padding: 12px; margin-bottom: 12px; }
+  .client { border-top: 1px solid var(--border); padding: 10px 0; }
+  .client .buttons { margin-top: 8px; gap: 6px; }
+  .client button, .form button { min-width: 0; padding: 8px 12px; }
+  details { border-top: 1px solid var(--border); padding: 10px 0; }
+  summary { cursor: pointer; font-weight: 600; padding: 6px 0; }
+  .form { display: grid; gap: 8px; max-width: 520px; margin-top: 8px; }
+  .form label { display: grid; gap: 4px; color: var(--muted); font-size: .9rem; }
+  .form label.check { display: flex; align-items: center; gap: 8px; color: var(--text); }
+  .form input:not([type=checkbox]):not([type=radio]), .form select { font: inherit; color: var(--text);
+       background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 8px; width: 100%; }
+  .form .result { color: var(--muted); margin: 0; white-space: pre-wrap; }
+  .danger { border-color: var(--down); }
 </style>
 </head>
 <body>
@@ -44,6 +70,39 @@
     <h2><span class="dot" id="p-dot"></span>Beamer<span class="state" id="p-state">…</span></h2>
     <div id="p-body"></div>
     <p id="message" role="status"></p>
+  </section>
+  <section class="wide" id="s-sec" hidden>
+    <h2>Einstellungen am Beamer</h2>
+    <div class="groups" id="s-body"></div>
+  </section>
+  <section class="wide" id="c-sec" hidden>
+    <h2>Präsentation am Beamer</h2>
+    <div id="c-guests"></div>
+    <div class="groups">
+      <div>
+        <h3>Fernbedienung (EZCast-Menü)</h3>
+        <div class="pad">
+          <span></span><button data-key="10" aria-label="Hoch">▲</button><span></span>
+          <button data-key="12" aria-label="Links">◀</button><button data-key="14">OK</button><button data-key="13" aria-label="Rechts">▶</button>
+          <button data-key="15">Zurück</button><button data-key="11" aria-label="Runter">▼</button><span></span>
+        </div>
+        <h3 style="margin-top:16px">Ton der Übertragung</h3>
+        <div class="buttons" style="margin-top:0">
+          <button id="vol-down">Leiser</button><button id="vol-up">Lauter</button>
+        </div>
+      </div>
+      <div>
+        <h3>Wer gerade zeigt</h3>
+        <div id="c-list"></div>
+        <div class="buttons"><button id="conf-all" class="danger">Alle trennen</button></div>
+      </div>
+    </div>
+    <p class="warn" id="c-msg" role="status"></p>
+  </section>
+  <section class="wide" id="a-sec" hidden>
+    <h2>Verwaltung des Beamers</h2>
+    <div id="a-info"></div>
+    <div id="a-body"></div>
   </section>
   <section>
     <h2><span class="dot" id="r-dot"></span>Drahtlos-Übertragung<span class="state" id="r-state">…</span></h2>
@@ -80,9 +139,10 @@ function duration(s) {
   return h ? h + " h " + m + " min" : m ? m + " min" : s + " s";
 }
 
-async function send(action, value) {
+async function send(action, value, question) {
+  if (question && !confirm(question)) return;
   $("message").textContent = "";
-  document.querySelectorAll("#p-body button").forEach(b => b.disabled = true);
+  document.querySelectorAll("#p-body button, #s-body button").forEach(b => b.disabled = true);
   try {
     const reply = await fetch("/api/projector", { method: "POST",
       headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action, value }) });
@@ -133,6 +193,267 @@ function showProjector(p) {
   }
 }
 
+// ---- settings of the projector's control page ------------------------------------------------
+// [key, label] for values with -/+ (buttons key1/key2) and direct entry
+const STEPS = { bri: "Helligkeit", con: "Kontrast", gam: "Gamma", ctp: "Farbtemperatur",
+  vks: "Trapez vertikal", hks: "Trapez horizontal", zom: "Digitalzoom", vol: "Lautstärke" };
+// options: [value, label, bit in "dyar" (aspect ratios the current signal allows)]
+const CHOICES = {
+  mod: ["Bildmodus", [["0", "Hell"], ["1", "Präsentation"], ["2", "Standard"], ["3", "Video"], ["20", "Benutzer"]]],
+  aks: ["Auto-Trapez", [["0", "Aus"], ["1", "An"]]],
+  apr: ["Seitenverhältnis", [["0", "Auto", 1], ["1", "Voll", 2], ["2", "4:3", 4], ["3", "16:9", 8],
+        ["4", "Letterbox", 16], ["5", "2,35:1", 32], ["6", "Füllen", 64], ["7", "Nativ", 128]]],
+  prj: ["Projektion", [["0", "Von vorn, Tisch"], ["2", "Von hinten, Tisch"]]],
+  lgo: ["Startbild", [["0", "Acer"], ["1", "Eigenes"]]],
+};
+const TOGGLES = { hid: "Bild ausblenden", frz: "Standbild", eco: "Eco-Modus" };
+const GROUPS = [
+  ["Schnell", ["hid", "frz", "eco", "syc", "rst"]],
+  ["Bild", ["mod", "bri", "con", "gam", "ctp"]],
+  ["Geometrie", ["aks", "vks", "hks", "apr", "zom"]],
+  ["Ton und Aufstellung", ["vol", "prj", "lgo"]],
+];
+const ctl = {};          // key -> {update(settings)}
+let settingsBuilt = false;
+
+function stepper(key) {
+  const input = el("input", { type: "text", inputMode: "decimal", ariaLabel: STEPS[key] });
+  input.onchange = () => send("set:" + key, input.value.trim());
+  const minus = button("−", false, false, () => send("press", key + "1"));
+  const plus = button("+", false, false, () => send("press", key + "2"));
+  minus.ariaLabel = STEPS[key] + " verringern";
+  plus.ariaLabel = STEPS[key] + " erhöhen";
+  ctl[key] = { update(s) {
+    const locked = key === "vks" && s.aks === "1";       // auto keystone owns the vertical value
+    [input, minus, plus].forEach(n => n.disabled = locked);
+    if (document.activeElement !== input && s[key] !== undefined) input.value = s[key];
+  } };
+  return el("div", { className: "setting" }, [el("span", { textContent: STEPS[key] }), minus, input, plus]);
+}
+function chooser(key) {
+  const [label, options] = CHOICES[key];
+  const select = el("select", { ariaLabel: label });
+  select.onchange = () => send("set:" + key, select.value);
+  ctl[key] = { update(s) {
+    if (document.activeElement === select) return;
+    const allowed = key === "apr" && s.dyar ? parseInt(s.dyar, 10) : null;
+    select.replaceChildren(...options
+      .filter(([v, , bit]) => allowed === null || !bit || (allowed & bit) || v === s[key])
+      .map(([v, l]) => el("option", { value: v, textContent: l, selected: v === s[key] })));
+  } };
+  return el("div", { className: "setting" }, [el("span", { textContent: label }), select]);
+}
+function toggle(key) {
+  const b = button(TOGGLES[key], false, false, () => send("press", key));
+  ctl[key] = { update(s) { b.className = s[key] === "1" ? "active" : ""; b.ariaPressed = s[key] === "1"; } };
+  return b;
+}
+function buildSettings() {
+  $("s-body").replaceChildren(...GROUPS.map(([title, keys]) => {
+    const box = el("div", {}, [el("h3", { textContent: title })]);
+    if (title === "Schnell") {
+      box.append(el("div", { className: "buttons" }, [
+        ...keys.filter(k => TOGGLES[k]).map(toggle),
+        button("Neu synchronisieren", false, false, () => send("press", "syc")),
+        button("Zurücksetzen", false, false, () => send("press", "rst",
+          "Die Einstellungen des Beamers auf Werkseinstellung zurücksetzen (wie „Reset“ im Beamer-Menü)?")),
+      ]));
+    } else {
+      keys.forEach(k => box.append(STEPS[k] ? stepper(k) : chooser(k)));
+    }
+    return box;
+  }));
+  settingsBuilt = true;
+}
+function showSettings(p) {
+  const s = p.power === "on" && p.settings;
+  $("s-sec").hidden = !s;
+  if (!s) return;
+  if (!settingsBuilt) buildSettings();
+  Object.values(ctl).forEach(c => c.update(s));
+  $("s-body").querySelectorAll("button").forEach(b => { if (!b.closest(".setting")) b.disabled = false; });
+}
+
+// ---- presentation control and administration ----------------------------------------------
+async function api(action, value, fields, question, out) {
+  if (question && !confirm(question)) return null;
+  out = out || $("c-msg");
+  out.textContent = "";
+  try {
+    const reply = await fetch("/api/projector", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action, value: value || "", fields: fields || null }) });
+    const data = await reply.json();
+    if (!data.ok) { out.textContent = data.error || "Befehl fehlgeschlagen"; return null; }
+    setTimeout(refresh, 800);
+    return data;
+  } catch (e) {
+    out.textContent = "Keine Verbindung zum Server";
+    return null;
+  }
+}
+document.querySelectorAll("[data-key]").forEach(b => b.onclick = () => api("key", b.dataset.key));
+$("vol-up").onclick = () => api("volume", "up");
+$("vol-down").onclick = () => api("volume", "down");
+$("conf-all").onclick = () => api("conf_all", "", null, "Alle Präsentationen am Beamer beenden?");
+
+const POSITIONS = [["1:1", "Vollbild"], ["2:1", "Links"], ["2:2", "Rechts"],
+                   ["4:1", "Viertel 1"], ["4:2", "Viertel 2"], ["4:3", "Viertel 3"], ["4:4", "Viertel 4"]];
+function showConference(data) {
+  const on = data.projector.power === "on";
+  $("c-sec").hidden = !on;
+  if (!on) return;
+  $("c-guests").replaceChildren(...(data.guests || []).map(g => el("div", { className: "guest" }, [
+    el("p", { className: "note", textContent: (g.name || "Ein Gerät") + " (" + g.ip + ") möchte präsentieren" }),
+    el("div", { className: "buttons" }, [
+      button("Erlauben", false, false, () => api("guest", g.ip, { allow: true })),
+      button("Ablehnen", false, false, () => api("guest", g.ip, { allow: false })),
+    ]),
+  ])));
+  const conf = data.admin && data.admin.ezcast && data.admin.ezcast.conference;
+  if (!conf) { $("c-list").replaceChildren(el("p", { className: "note", textContent: "Wird gelesen …" })); return; }
+  if (!conf.clients.length) { $("c-list").replaceChildren(el("p", { className: "note", textContent: "Niemand." })); return; }
+  $("c-list").replaceChildren(...conf.clients.map(c => {
+    const where = POSITIONS.find(p => p[0] === conf.split + ":" + c.position);
+    const host = c.role === "host";
+    return el("div", { className: "client" }, [
+      rows([["Gerät", c.name || c.ip], ["Adresse", c.ip], ["Rolle", host ? "Moderator" : "Gast"],
+            ["Platz", where ? where[1] : "nicht im Bild"]]),
+      el("div", { className: "buttons" }, [
+        ...POSITIONS.map(([v, l]) => button(l, where && where[0] === v, false, () => api("conf", v, { ip: c.ip }))),
+        ...(host ? [] : [button("Zum Moderator", false, false, () => api("conf", "host", { ip: c.ip }, "„" + (c.name || c.ip) + "“ zum Moderator machen?"))]),
+        button("Trennen", false, false, () => api("conf", "kick", { ip: c.ip }, "„" + (c.name || c.ip) + "“ vom Beamer trennen?")),
+      ]),
+    ]);
+  }));
+}
+
+// forms: [name, label, type]; values come from the projector once, then stay as typed
+function form(id, fieldsDef, actions) {
+  const f = el("form", { className: "form", id, onsubmit: e => e.preventDefault() });
+  fieldsDef.forEach(([name, label, type, extra]) => {
+    const input = el("input", { name, type: type || "text", autocomplete: type === "password" ? "new-password" : "off" });
+    Object.entries(extra || {}).forEach(([k, v]) => input.setAttribute(k, v));
+    f.append(type === "checkbox" ? el("label", { className: "check" }, [input, label]) : el("label", {}, [label, input]));
+  });
+  const out = el("p", { className: "result", role: "status" });
+  f.append(el("div", { className: "buttons" }, actions(f, out)), out);
+  return f;
+}
+function values(f) {
+  const v = {};
+  [...f.elements].filter(e => e.name).forEach(e => v[e.name] = e.type === "checkbox" ? (e.checked ? "1" : "0") : e.value.trim());
+  return v;
+}
+function fill(f, v) {
+  Object.entries(v).forEach(([k, x]) => {
+    const e = f.elements[k];
+    if (!e) return;
+    if (e.type === "checkbox") e.checked = x === true || x === "1"; else e.value = x === undefined || x === null ? "" : x;
+  });
+}
+const filled = {};
+function details(title, children) { return el("details", {}, [el("summary", { textContent: title }), ...children]); }
+
+function buildAdmin() {
+  const lan = form("f-lan", [["dhcp", "Adresse automatisch beziehen (DHCP)", "checkbox"], ["ip", "IP-Adresse"],
+    ["mask", "Netzmaske"], ["gateway", "Gateway"], ["dns", "DNS-Server"]], (f, out) => [
+    button("Speichern", false, false, async () => {
+      if (await api("lan", "", values(f), "Netzwerk des Beamers ändern? Bei falschen Werten ist er nicht mehr erreichbar. " +
+        "Die Weiterleitung auf der Box und diese Konfiguration nutzen die Adresse 10.1.34.179.", out)) { out.textContent = "Gespeichert."; filled.lan = false; }
+    })]);
+  const wifi = form("f-wifi", [["ssid", "Netzname (SSID)", "text", { list: "wifi-list" }], ["psk", "Passwort (leer = offenes Netz)", "password"]], (f, out) => [
+    button("Netze suchen", false, false, async () => {
+      out.textContent = "Suche …";
+      const r = await api("wifi_scan", "", null, null, out);
+      if (!r) return;
+      $("wifi-list").replaceChildren(...r.data.map(n => el("option", { value: n.ssid, label: n.ssid + " (" + n.signal + " %)" })));
+      out.textContent = r.data.length + " Netze gefunden: " + r.data.map(n => n.ssid + " " + n.signal + " %").join(", ");
+    }),
+    button("Verbinden", false, false, async () => {
+      if (await api("wifi_join", "", values(f), "Den Beamer mit dem WLAN „" + values(f).ssid + "“ verbinden?", out)) out.textContent = "Verbindet … der Status erscheint oben.";
+    }),
+    button("Vergessen", false, false, async () => {
+      if (await api("wifi_forget", "", values(f), "Das WLAN „" + values(f).ssid + "“ auf dem Beamer vergessen?", out)) out.textContent = "Vergessen.";
+    })]);
+  wifi.append(el("datalist", { id: "wifi-list" }));
+  const ap = form("f-ap", [["psk", "Neues Passwort (8–15 Buchstaben/Ziffern)", "password"]], (f, out) => [
+    button("Ändern", false, false, async () => {
+      if (await api("softap_psk", "", values(f), "Hotspot-Passwort ändern? Wer gerade über den Hotspot verbunden ist, fliegt raus.", out)) { out.textContent = "Geändert."; f.reset(); }
+    })]);
+  const cres = form("f-cres", [["ip", "Adresse des Crestron-Steuersystems"], ["id", "IP-ID"], ["port", "Port"]], (f, out) => [
+    button("Speichern", false, false, async () => { if (await api("crestron", "", values(f), null, out)) { out.textContent = "Gespeichert."; filled.cres = false; } })]);
+  const login = form("f-login", [["admin_on", "Administrator-Anmeldung aktiv", "checkbox"], ["admin_pw", "Neues Administrator-Passwort (leer = unverändert, max. 8)", "password"],
+    ["user_on", "Benutzer-Anmeldung aktiv", "checkbox"], ["user_pw", "Neues Benutzer-Passwort (leer = unverändert, max. 8)", "password"]], (f, out) => [
+    button("Speichern", false, false, async () => {
+      if (await api("passwords", "", values(f), "Anmeldung an der Acer-Weboberfläche ändern?", out)) { out.textContent = "Gespeichert."; f.admin_pw.value = f.user_pw.value = ""; filled.login = false; }
+    })]);
+  const mail = form("f-mail", [["to", "An"], ["cc", "Kopie an"], ["subject", "Betreff"], ["from", "Absender"], ["server", "SMTP-Server"],
+    ["user", "SMTP-Benutzer"], ["password", "SMTP-Passwort (leer = unverändert)", "password"],
+    ["a0", "Alarm bei: Lüfter blockiert", "checkbox"], ["a1", "Alarm bei: Übertemperatur", "checkbox"],
+    ["a2", "Alarm bei: Lampe defekt", "checkbox"], ["a3", "Alarm bei: Farbrad-Fehler", "checkbox"]], (f, out) => [
+    button("Speichern", false, false, async () => {
+      const v = values(f);
+      v.alerts = [v.a0, v.a1, v.a2, v.a3].map(x => x === "1");
+      if (await api("email", "", v, null, out)) { out.textContent = "Gespeichert."; f.password.value = ""; filled.mail = false; }
+    })]);
+  let otaInfo = null;
+  const fw = form("f-fw", [], (f, out) => {
+    const install = button("Installieren", false, true, async () => {
+      if (!confirm("Firmware " + otaInfo.serverVersion + " installieren? Der Beamer lädt sie herunter und startet neu. Nicht ausschalten!")) return;
+      if (!await api("ota_upgrade", "", null, "Wirklich? Ein Abbruch kann das EZCast-Modul unbrauchbar machen.", out)) return;
+      const tick = async () => {
+        const r = await api("ota_progress", "", null, null, out);
+        if (!r) return;
+        out.textContent = r.data.state === "3" ? "Heruntergeladen, wird installiert, danach Neustart." : "Download: " + (r.data.percent || 0) + " %";
+        if (r.data.state !== "3") setTimeout(tick, 2000);
+      };
+      tick();
+    });
+    return [button("Nach Update suchen", false, false, async () => {
+      out.textContent = "Frage den Update-Server …";
+      const r = await api("ota_check", "", null, null, out);
+      if (!r) return;
+      otaInfo = r.data;
+      const newer = otaInfo.compareRet === 1 || otaInfo.compareRet === "1";
+      install.disabled = !newer;
+      out.textContent = "Installiert: " + otaInfo.localVersion + "\nAuf dem Server: " + (otaInfo.serverVersion || "–") +
+        (otaInfo.Netstatus === "NG" ? "\nDer Beamer hat keinen Internetzugang." : newer ? "\nEin Update ist verfügbar." : "\nAktuell.");
+    }), install];
+  });
+  const sys = form("f-sys", [], (f, out) => [
+    button("EZCast-Modul neu starten", false, false, async () => {
+      if (await api("ez_reboot", "", null, "EZCast-Modul neu starten? Die Übertragung bricht kurz ab.", out)) out.textContent = "Startet neu …";
+    }),
+    el("button", { type: "button", className: "danger", textContent: "EZCast auf Werkseinstellung", onclick: async () => {
+      if (prompt("Setzt Hotspot, WLAN, Namen und Zugangscodes des EZCast-Moduls zurück. Zum Bestätigen ZURÜCKSETZEN eintippen:") !== "ZURÜCKSETZEN") return;
+      if (await api("ez_reset", "", null, null, out)) out.textContent = "Wird zurückgesetzt …";
+    } }),
+  ]);
+  $("a-body").replaceChildren(
+    details("Netzwerk (LAN)", [lan]), details("WLAN des Beamers", [wifi]), details("Hotspot des Beamers", [ap]),
+    details("Anmeldung an der Acer-Weboberfläche", [login]), details("E-Mail-Alarm", [mail]),
+    details("Crestron", [cres]), details("Firmware des EZCast-Moduls", [fw]), details("System", [sys]));
+}
+function showAdmin(data) {
+  const a = data.admin;
+  const on = data.projector.power === "on" && a;
+  $("a-sec").hidden = !on;
+  if (!on) return;
+  if (!$("a-body").firstChild) buildAdmin();
+  const ez = a.ezcast || {};
+  $("a-info").replaceChildren(rows([["EZCast-Firmware", ez.firmware], ["Chip", ez.chip], ["Gerätename", ez.name],
+    ["Ausgabe", ez.resolution], ["Hotspot", ez.soft_ap], ["Verbundene Geräte", ez.connections],
+    ["LAN-Kabel", ez.lan_cable === undefined ? "" : ez.lan_cable ? "verbunden" : "nicht verbunden"],
+    ["WLAN", ez.wifi === undefined ? "" : ez.wifi || "nicht verbunden"]]));
+  const acer = a.acer || {};
+  const once = (key, id, v) => { if (v && !filled[key]) { fill($(id), v); filled[key] = true; } };
+  once("lan", "f-lan", acer.lan && Object.assign({}, acer.lan, { dhcp: acer.lan.dhcp }));
+  once("cres", "f-cres", acer.crestron);
+  once("login", "f-login", acer.login && { admin_on: acer.login.admin, user_on: acer.login.user });
+  once("mail", "f-mail", acer.email && Object.assign({}, acer.email,
+    Object.fromEntries((acer.email.alerts || []).map((x, i) => ["a" + i, x]))));
+}
+
 function showReceiver(r) {
   const body = $("r-body");
   const s = r.session;
@@ -179,6 +500,9 @@ async function refresh() {
   try {
     const data = await (await fetch("/api/status", { cache: "no-store" })).json();
     showProjector(data.projector);
+    showSettings(data.projector);
+    showConference(data);
+    showAdmin(data);
     showReceiver(data.receiver);
     showBeacon(data.beacon);
   } catch (e) {

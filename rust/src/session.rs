@@ -141,6 +141,9 @@ pub struct Session {
     pub rtsp_port: u16,
     pub name: String,
     pub stop: Arc<AtomicBool>,
+    /// Wi-Fi Direct through the box: the RTP of the source arrives forwarded by the box, which
+    /// the router only lets through as an answer. Keep that path open by sending to the box.
+    pub punch: Option<SocketAddr>,
 }
 
 impl Session {
@@ -154,6 +157,15 @@ impl Session {
                 return;
             }
         };
+        if let (Some(target), Ok(sock)) = (self.punch, rtp.try_clone()) {
+            let stop = rtp_stop.clone();
+            thread::spawn(move || {
+                while !stop.load(Ordering::Relaxed) {
+                    let _ = sock.send_to(b"keep-open", target);
+                    thread::sleep(Duration::from_secs(5));
+                }
+            });
+        }
         let rtp_thread = {
             let (pipeline, stop) = (pipeline.clone(), rtp_stop.clone());
             thread::spawn(move || receive_rtp(rtp, pipeline, stop))

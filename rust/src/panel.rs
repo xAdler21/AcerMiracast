@@ -15,6 +15,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use serde_json::{Value, json};
 
 use crate::Config;
+use crate::admin;
+use crate::ezdisplay::{Output, Remote};
 use crate::http::{self, acer_post};
 use crate::hub::{Hub, log};
 
@@ -23,6 +25,20 @@ const ACER_INPUTS: [(&str, &str); 8] = [
     ("3", "HDMI 1"), ("6", "HDMI 2"), ("33", "Drahtlos"), ("20", "VGA 1"),
     ("21", "VGA 2"), ("22", "Video"), ("34", "Medien"), ("35", "USB"),
 ];
+
+/// Settings of the projector's control page (/form/control_cgi) that take a value ("key=value").
+const ACER_SETTINGS: [&str; 14] = ["src", "mod", "aks", "apr", "prj", "lgo", "bri", "con", "vks", "hks", "gam", "ctp", "vol", "zom"];
+/// Buttons of the control page ("key=key"): toggles, one-shot actions and the -/+ steps
+/// (suffix 1 = minus, 2 = plus) of the adjustable values.
+const ACER_BUTTONS: [&str; 21] = [
+    "hid", "frz", "eco", "syc", "rst", "bri1", "bri2", "con1", "con2", "vks1", "vks2", "hks1", "hks2",
+    "gam1", "gam2", "ctp1", "ctp2", "vol1", "vol2", "zom1", "zom2",
+];
+
+/// Plain values only: digits, letters, '.', '-' (the projector answers e.g. gam "1.8", ctp "CT2").
+fn acer_value_ok(v: &str) -> bool {
+    !v.is_empty() && v.len() <= 8 && v.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'.' || c == b'-')
+}
 
 fn acer_error(code: &str) -> Option<&'static str> {
     Some(match code {
@@ -34,6 +50,29 @@ fn acer_error(code: &str) -> Option<&'static str> {
         "6" => "Farbrad",
         _ => return None,
     })
+}
+
+/// Wake-on-LAN magic packet (6 x 0xff, then the MAC 16 times) to UDP 9, sent to the
+/// projector's address and to the directed broadcast of its /24.
+fn wake_on_lan(mac: &str, host: &str) -> Result<(), String> {
+    let bytes: Vec<u8> = mac.split([':', '-']).filter_map(|p| u8::from_str_radix(p, 16).ok()).collect();
+    if bytes.len() != 6 {
+        return Err("projector_mac fehlt".into());
+    }
+    let ip: std::net::Ipv4Addr = host.parse().map_err(|_| "projector_host ist keine IPv4-Adresse".to_string())?;
+    let mut packet = vec![0xffu8; 6];
+    for _ in 0..16 {
+        packet.extend_from_slice(&bytes);
+    }
+    let sock = std::net::UdpSocket::bind("0.0.0.0:0").map_err(|e| e.to_string())?;
+    let _ = sock.set_broadcast(true);
+    let o = ip.octets();
+    let broadcast = std::net::Ipv4Addr::new(o[0], o[1], o[2], 255);
+    let mut ok = false;
+    for target in [ip, broadcast] {
+        ok |= sock.send_to(&packet, (target, 9)).is_ok();
+    }
+    if ok { Ok(()) } else { Err("Weck-Paket konnte nicht gesendet werden".into()) }
 }
 
 struct State {
@@ -48,13 +87,19 @@ struct State {
 pub struct Monitor {
     config: Config,
     hub: Arc<Hub>,
+    output: Option<Output>,
     state: Mutex<State>,
+    admin: Mutex<Value>,
     poke: (Mutex<bool>, Condvar),
+    admin_poke: (Mutex<bool>, Condvar),
 }
 
 impl Monitor {
-    pub fn start(config: Config, hub: Arc<Hub>) -> Arc<Monitor> {
+    pub fn start(config: Config, hub: Arc<Hub>, output: Option<Output>) -> Arc<Monitor> {
         let m = Arc::new(Monitor {
+            output,
+            admin: Mutex::new(Value::Null),
+            admin_poke: (Mutex::new(false), Condvar::new()),
             state: Mutex::new(State {
                 projector: json!({"configured": !config.projector_host.is_empty(), "reachable": false}),
                 beacon: json!({"configured": !config.beacon_host.is_empty(), "reachable": false}),
@@ -69,7 +114,50 @@ impl Monitor {
         });
         let worker = m.clone();
         thread::spawn(move || worker.run());
+        let worker = m.clone();
+        thread::spawn(move || worker.run_admin());
         m
+    }
+
+    /// The admin pages answer slowly: read them on their own thread, every 30 s while the
+    /// projector is on, and right after an admin command.
+    fn run_admin(&self) {
+        loop {
+            let on = self.state.lock().unwrap().projector["power"] == "on";
+            let data = if on { admin::read(&self.config.projector_host) } else { Value::Null };
+            *self.admin.lock().unwrap() = data;
+            let (lock, cond) = &self.admin_poke;
+            let mut poked = lock.lock().unwrap();
+            if !*poked {
+                poked = cond.wait_timeout(poked, Duration::from_secs(if on { 30 } else { 10 })).unwrap().0;
+            }
+            *poked = false;
+        }
+    }
+
+    /// Admin commands (admin.rs) and actions through the open projector connection.
+    pub fn admin_command(&self, action: &str, value: &str, fields: &Value) -> Result<Value, String> {
+        let remote = match action {
+            "key" => Some(Remote::Key(value.parse().ok().filter(|k| (10..=15).contains(k)).ok_or("Unbekannte Taste")?)),
+            "volume" => Some(Remote::Volume { up: value == "up" }),
+            "disconnect_all" => Some(Remote::DisconnectAll),
+            "guest" => Some(Remote::AnswerGuest { ip: value.to_string(), allow: fields["allow"] == true }),
+            _ => None,
+        };
+        if let Some(r) = remote {
+            let out = self.output.as_ref().ok_or("Bildausgabe zum Beamer ist nicht eingerichtet")?;
+            return out.remote(r).map(|_| Value::Null);
+        }
+        if self.config.projector_host.is_empty() {
+            return Err("Kein Beamer konfiguriert".into());
+        }
+        if self.state.lock().unwrap().projector["reachable"] != true {
+            return Err("Der Beamer ist aus".into());
+        }
+        let result = admin::command(&self.config.projector_host, action, value, fields);
+        *self.admin_poke.0.lock().unwrap() = true;
+        self.admin_poke.1.notify_all();
+        result
     }
 
     fn run(&self) {
@@ -136,7 +224,20 @@ impl Monitor {
                 }
             }
         }
+        let on = p["power"] == "on";
+        if on {
+            if let Some(old) = st.projector.get("settings") {
+                p["settings"] = old.clone(); // until the fresh query below is in
+            }
+        }
         st.projector = p;
+        drop(st);
+        if on {
+            // all settings of the control page; the same query the projector's own page sends
+            if let Ok(c) = acer_post(host, "/form/control_cgi", "QueryControl") {
+                self.state.lock().unwrap().projector["settings"] = json!(c);
+            }
+        }
     }
 
     /// Returns true if the box answered.
@@ -196,13 +297,19 @@ impl Monitor {
                     }
                     return Ok(());
                 }
-                if self.config.wake_url.is_empty() {
-                    return Err("Einschalten ist nicht eingerichtet (wake_url fehlt)".into());
+                // The VM sends the wake packet itself (works if the router passes directed
+                // broadcasts or keeps the projector's ARP entry); the box in the projector's
+                // subnet is the fallback that always reaches it.
+                let own = wake_on_lan(&self.config.projector_mac, &host);
+                if own.is_err() && self.config.wake_url.is_empty() {
+                    return Err("Einschalten ist nicht eingerichtet (projector_mac oder wake_url fehlt)".into());
                 }
-                let (_, body) = http::request("POST", &self.config.wake_url, b"wake", "text/plain", Duration::from_secs(6))
-                    .map_err(|_| "Der Funk-Sender antwortet nicht".to_string())?;
-                if !String::from_utf8_lossy(&body).contains("ok") {
-                    return Err("Der Funk-Sender konnte das Weck-Paket nicht schicken".into());
+                if !self.config.wake_url.is_empty() {
+                    let sent = http::request("POST", &self.config.wake_url, b"wake", "text/plain", Duration::from_secs(6))
+                        .is_ok_and(|(_, body)| String::from_utf8_lossy(&body).contains("ok"));
+                    if !sent && own.is_err() {
+                        return Err("Der Funk-Sender konnte das Weck-Paket nicht schicken".into());
+                    }
                 }
                 self.state.lock().unwrap().waking_until = Some(Instant::now() + Duration::from_secs(90));
                 return Ok(());
@@ -210,14 +317,34 @@ impl Monitor {
             if !reachable {
                 return Err("Der Beamer ist aus".into());
             }
-            if action == "power" && value == "off" {
-                if current["power"] == "on" {
-                    acer_post(&host, "/form/control_cgi", "pwr=pwr").map_err(fail)?; // toggle only
+            let body = if action == "power" && value == "off" {
+                if current["power"] != "on" {
+                    return Ok(());
                 }
+                "pwr=pwr".to_string() // toggle only
             } else if action == "input" && ACER_INPUTS.iter().any(|(c, _)| *c == value) {
-                acer_post(&host, "/form/control_cgi", &format!("src={value}")).map_err(fail)?;
+                format!("src={value}")
+            } else if current["power"] != "on" {
+                return Err("Der Beamer ist nicht eingeschaltet".into());
+            } else if action == "press" && ACER_BUTTONS.contains(&value) {
+                format!("{value}={value}")
+            } else if let Some(key) = action.strip_prefix("set:").filter(|k| ACER_SETTINGS.contains(k)) {
+                if !acer_value_ok(value) {
+                    return Err("Ungültiger Wert".into());
+                }
+                format!("{key}={value}")
             } else {
                 return Err("Unbekannter Befehl".into());
+            };
+            // the answer carries the new settings: show them at once
+            let answer = acer_post(&host, "/form/control_cgi", &body).map_err(fail)?;
+            if !answer.is_empty() {
+                let mut st = self.state.lock().unwrap();
+                if let Some(Value::Object(s)) = st.projector.get_mut("settings") {
+                    for (k, v) in answer {
+                        s.insert(k, json!(v));
+                    }
+                }
             }
             Ok(())
         })();
@@ -235,7 +362,9 @@ impl Monitor {
                    "frames": s.frames, "video": s.video, "output": self.hub.output()})
         });
         let now = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
-        json!({"projector": projector, "beacon": beacon,
+        let guests: Vec<Value> = self.hub.guests().into_iter()
+            .map(|g| json!({"name": g.name, "ip": g.ip, "fullscreen": g.fullscreen})).collect();
+        json!({"projector": projector, "beacon": beacon, "admin": *self.admin.lock().unwrap(), "guests": guests,
                "receiver": {"session": session, "name": self.config.room_name}, "time": now})
     }
 }
@@ -321,21 +450,29 @@ fn handle(mut stream: TcpStream, monitor: &Monitor, hub: &Hub) -> io::Result<()>
                 return respond(&mut stream, 415, "application/json",
                     json!({"ok": false, "error": "Content-Type muss application/json sein"}).to_string().as_bytes());
             }
-            let mut body = vec![0u8; length.min(1024)];
+            let mut body = vec![0u8; length.min(8192)];
             reader.read_exact(&mut body)?;
-            let parsed: Option<(String, String)> = serde_json::from_slice::<Value>(&body).ok().and_then(|v| {
+            let parsed: Option<(String, String, Value)> = serde_json::from_slice::<Value>(&body).ok().and_then(|v| {
                 let text = |k: &str| v.get(k).map(|x| x.as_str().map(String::from).unwrap_or_else(|| x.to_string()));
-                Some((text("action")?, text("value")?))
+                Some((text("action")?, text("value").unwrap_or_default(), v.get("fields").cloned().unwrap_or(Value::Null)))
             });
-            let Some((action, value)) = parsed else {
+            let Some((action, value, fields)) = parsed else {
                 return respond(&mut stream, 400, "application/json", json!({"ok": false, "error": "Ungültige Anfrage"}).to_string().as_bytes());
             };
-            let result = monitor.command(&action, &value);
-            if let Err(e) = &result {
-                log(format!("panel: {action} {value} failed: {e}"));
+            let picture = action == "power" || action == "input" || action == "press" || action.starts_with("set:");
+            let result = if picture { monitor.command(&action, &value).map(|_| Value::Null) } else { monitor.admin_command(&action, &value, &fields) };
+            // never log form fields: they may hold passwords
+            match &result {
+                Err(e) => log(format!("panel: {action} {value} failed: {e}")),
+                Ok(_) if !picture => log(format!("panel: {action} {value}")),
+                Ok(_) => {}
             }
             let code = if result.is_ok() { 200 } else { 502 };
-            respond(&mut stream, code, "application/json", json!({"ok": result.is_ok(), "error": result.err()}).to_string().as_bytes())
+            let reply = match result {
+                Ok(data) => json!({"ok": true, "error": null, "data": data}),
+                Err(e) => json!({"ok": false, "error": e}),
+            };
+            respond(&mut stream, code, "application/json", reply.to_string().as_bytes())
         }
         _ => respond(&mut stream, 404, "text/plain", b"not found"),
     }

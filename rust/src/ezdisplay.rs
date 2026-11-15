@@ -124,10 +124,22 @@ pub fn render_standby(width: u32, height: u32, room: &str, font: &str) -> io::Re
     Ok(unit.data)
 }
 
+/// What the panel can do through the open projector connection (as the Acer software does).
+pub enum Remote {
+    /// remote-control key: 10 up, 11 down, 12 left, 13 right, 14 OK, 15 back
+    Key(u32),
+    Volume { up: bool },
+    DisconnectAll,
+    AnswerGuest { ip: String, allow: bool },
+}
+
 enum Msg {
     Video(Vec<u8>, bool),
     End,
+    Remote(Remote, mpsc::Sender<Result<(), String>>),
 }
+
+const CMD_VOLUME: u32 = 8;
 
 /// Handle used by the session; all network work happens on the output's own thread so a slow
 /// projector never stalls the receiver.
@@ -154,6 +166,12 @@ impl Output {
 
     pub fn session_ended(&self) {
         let _ = self.tx.send(Msg::End);
+    }
+
+    pub fn remote(&self, what: Remote) -> Result<(), String> {
+        let (tx, rx) = mpsc::channel();
+        self.tx.send(Msg::Remote(what, tx)).map_err(|_| "Ausgabe läuft nicht".to_string())?;
+        rx.recv_timeout(Duration::from_secs(5)).unwrap_or_else(|_| Err("Der Beamer antwortet nicht".into()))
     }
 }
 
@@ -220,6 +238,9 @@ impl Worker {
                     self.retry_at = Instant::now();
                     self.hub.set_output("");
                 }
+                Ok(Msg::Remote(what, reply)) => {
+                    let _ = reply.send(self.remote(what));
+                }
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
                 Err(mpsc::RecvTimeoutError::Disconnected) => return,
             }
@@ -232,6 +253,31 @@ impl Worker {
                 }
             }
         }
+    }
+
+    fn remote(&mut self, what: Remote) -> Result<(), String> {
+        let Some(c) = self.conn.as_mut() else {
+            return Err("Keine Verbindung zum Beamer: er ist aus oder nicht auf dem Eingang „Drahtlos“".into());
+        };
+        let failed = |e: io::Error| format!("Senden an den Beamer fehlgeschlagen: {e}");
+        if let Remote::Volume { up } = what {
+            let msg = message(0, CMD_VOLUME, 0x1000, if up { 0x10 } else { 0x11 }, 0, 0, 0, &[]);
+            return c.writer.lock().unwrap().write_all(&msg).map_err(failed);
+        }
+        let Some(ctl) = c.control.as_mut() else {
+            return Err("Der Steuerkanal des Beamers ist nicht verbunden".into());
+        };
+        match what {
+            Remote::Key(code) => ctl.send_key(code),
+            Remote::DisconnectAll => ctl.disconnect_all(),
+            Remote::AnswerGuest { ip, allow } => {
+                let r = ctl.answer_guest(&ip, allow);
+                self.hub.guest_gone(&ip);
+                r
+            }
+            Remote::Volume { .. } => unreachable!(),
+        }
+        .map_err(failed)
     }
 
     fn fail(&mut self, why: &str) {
@@ -356,7 +402,7 @@ impl Worker {
         }
 
         // 1. control channel
-        let mut control = match Control::open(&stream_host, &self.s.name) {
+        let mut control = match Control::open(&stream_host, &self.s.name, self.hub.clone()) {
             Ok(c) => Some(c),
             Err(e) => {
                 log(format!("projector: control channel failed: {e}"));
