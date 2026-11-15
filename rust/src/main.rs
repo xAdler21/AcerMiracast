@@ -36,7 +36,10 @@ use session::{Options, Session};
 pub struct Config {
     pub room_name: String,
     pub projector_host: String,
+    pub projector_stream_host: String,
     pub projector_model: String,
+    pub standby: bool,
+    pub standby_font: String,
     pub wake_url: String,
     pub beacon_host: String,
     pub picture_output: String,
@@ -64,7 +67,10 @@ impl Config {
         Config {
             room_name: s("room_name", "Plintus"),
             projector_host: s("projector_host", ""),
+            projector_stream_host: s("projector_stream_host", ""),
             projector_model: s("projector_model", ""),
+            standby: v.get("standby").and_then(Value::as_bool).unwrap_or(true),
+            standby_font: s("standby_font", "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"),
             wake_url: s("wake_url", ""),
             beacon_host: s("beacon_host", ""),
             picture_output: s("picture_output", "ezdisplay"),
@@ -117,6 +123,11 @@ fn args() -> Args {
 
 // ---- MICE control channel (TCP 7250) ----------------------------------------------------------
 
+fn set_keepalive(conn: &TcpStream) {
+    let ka = socket2::TcpKeepalive::new().with_time(Duration::from_secs(30)).with_interval(Duration::from_secs(10));
+    let _ = socket2::SockRef::from(conn).set_tcp_keepalive(&ka);
+}
+
 const MICE_SOURCE_READY: u8 = 0x01;
 const MICE_STOP_PROJECTION: u8 = 0x02;
 
@@ -130,13 +141,26 @@ struct Mice {
 impl Mice {
     fn handle(self: Arc<Self>, mut conn: TcpStream) {
         let Ok(peer) = conn.peer_addr() else { return };
-        let _ = conn.set_read_timeout(Some(Duration::from_secs(70)));
+        log(format!("MICE: connection from {peer}"));
+        // No read timeout: Windows keeps this connection open and silent for the whole
+        // projection; closing it ends the projection (that was the drop after ~70 s).
+        // Dead peers are found by TCP keep-alive.
+        let _ = conn.set_read_timeout(None);
+        set_keepalive(&conn);
         let mut buf = Vec::new();
         let mut chunk = [0u8; 4096];
-        while let Ok(n) = conn.read(&mut chunk) {
-            if n == 0 {
-                return;
-            }
+        loop {
+            let n = match conn.read(&mut chunk) {
+                Ok(0) => {
+                    log(format!("MICE: {} closed the connection", peer.ip()));
+                    return;
+                }
+                Ok(n) => n,
+                Err(e) => {
+                    log(format!("MICE: connection from {} lost: {e}", peer.ip()));
+                    return;
+                }
+            };
             buf.extend_from_slice(&chunk[..n]);
             while buf.len() >= 4 {
                 let size = u16::from_be_bytes([buf[0], buf[1]]) as usize;
@@ -217,18 +241,39 @@ fn main() {
     let hub = Hub::new();
 
     let use_projector = config.picture_output == "ezdisplay" && !config.projector_host.is_empty();
+    let standby = Arc::new(Mutex::new(None));
     let output = use_projector.then(|| {
+        let stream_host = if config.projector_stream_host.is_empty() {
+            config.projector_host.clone()
+        } else {
+            config.projector_stream_host.clone()
+        };
+        if stream_host != config.projector_host {
+            log(format!("projector streaming ports go through {stream_host}"));
+        }
         ezdisplay::Output::start(
             ezdisplay::Settings {
                 host: config.projector_host.clone(),
+                stream_host,
                 width: config.video_width,
                 height: config.video_height,
                 name: config.room_name.clone(),
                 select_input: config.select_input,
+                standby: standby.clone(),
             },
             hub.clone(),
         )
     });
+    if use_projector && config.standby {
+        let (w, h, room, font) = (config.video_width, config.video_height, config.room_name.clone(), config.standby_font.clone());
+        thread::spawn(move || match ezdisplay::render_standby(w, h, &room, &font) {
+            Ok(frame) => {
+                log(format!("standby picture ready ({} bytes)", frame.len()));
+                *standby.lock().unwrap() = Some(frame);
+            }
+            Err(e) => log(format!("no standby picture: {e}")),
+        });
+    }
     let passthrough = config.video_mode != "transcode";
     if use_projector {
         log(format!(

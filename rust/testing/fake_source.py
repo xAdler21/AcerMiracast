@@ -180,12 +180,16 @@ def main():
                 state["idr"] += 1
                 state["idr_pending"] = True
                 c.send("RTSP/1.0 200 OK", [("CSeq", h["cseq"])])
+            elif first.startswith("GET_PARAMETER") and h.get("session") == "12345678":
+                state["sink_keepalive"] = state.get("sink_keepalive", 0) + 1
+                c.send("RTSP/1.0 200 OK", [("CSeq", h["cseq"])])
             elif first.startswith("TEARDOWN"):
                 state["teardown"] = True
                 c.send("RTSP/1.0 200 OK", [("CSeq", h["cseq"])])
             elif first.startswith("RTSP/1.0 200"):
                 state["keepalive"] = True
 
+    sock.settimeout(None)            # the sink may stay silent between its keep-alives
     threading.Thread(target=reader, daemon=True).start()
 
     mux = TsMux()
@@ -207,6 +211,9 @@ def main():
         time.sleep(max(0, start + (n + 1) / 30 - time.monotonic()))
     expect(True, "sent %d frames in %d RTP packets" % (frames, sent))
     expect(state["idr"] > 0, "sink asked for key frames %d times" % state["idr"])
+    if args.seconds >= 12:
+        expect(state.get("sink_keepalive", 0) > 0,
+               "sink kept the session alive (%d requests)" % state.get("sink_keepalive", 0))
     c.send("GET_PARAMETER rtsp://localhost/wfd1.0 RTSP/1.0", [("CSeq", 5)])
     time.sleep(0.5)
     expect(state["keepalive"], "keep-alive answered")

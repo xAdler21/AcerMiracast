@@ -84,12 +84,44 @@ pub fn parse_size(datagram: &[u8]) -> Option<(u32, u32)> {
 
 #[derive(Clone)]
 pub struct Settings {
+    /// projector address for its web interface
     pub host: String,
+    /// address for the streaming ports: the projector itself, or the box that relays to it
+    /// (the projector answers them only inside its own subnet)
+    pub stream_host: String,
     pub width: u32,
     pub height: u32,
     pub name: String,
-    /// switch the projector to its LAN/WiFi input (Acer web interface) before connecting
+    /// switch the projector to its LAN/WiFi input (Acer web interface) when someone projects
     pub select_input: bool,
+    /// picture shown while nobody projects (one H.264 key frame), filled in at start-up
+    pub standby: Arc<Mutex<Option<Vec<u8>>>>,
+}
+
+/// Renders the standby picture with ffmpeg as one H.264 key frame (CBP, with SPS/PPS).
+pub fn render_standby(width: u32, height: u32, room: &str, font: &str) -> io::Result<Vec<u8>> {
+    let esc = |t: &str| t.replace('\\', "\\\\").replace(':', "\\:").replace('\'', "\u{2019}").replace(',', "\\,");
+    let text = |t: &str, size: u32, y: &str, color: &str| {
+        format!("drawtext=fontfile={font}:text='{}':fontsize={size}:fontcolor={color}:x=(w-text_w)/2:y={y}", esc(t))
+    };
+    let filter = [
+        text("Win + K drücken", height / 8, "h*0.36", "white"),
+        text(&format!("und „{room}“ wählen"), height / 16, "h*0.36+th*2.6", "0xf2a93b"),
+        text("Bild vom Laptop drahtlos auf den Beamer", height / 30, "h*0.82", "0x98a1b0"),
+    ]
+    .join(",");
+    let out = std::process::Command::new("ffmpeg")
+        .args(["-hide_banner", "-loglevel", "error", "-nostdin", "-f", "lavfi", "-i"])
+        .arg(format!("color=c=0x0e1014:s={width}x{height}:r=1"))
+        .args(["-frames:v", "1", "-vf", &filter, "-pix_fmt", "yuv420p", "-c:v", "libx264", "-profile:v", "baseline",
+               "-level", "3.1", "-bf", "0", "-x264-params", "repeat-headers=1", "-f", "h264", "pipe:1"])
+        .stderr(std::process::Stdio::inherit())
+        .output()?;
+    let unit = crate::ts::AccessUnits::default()
+        .build(&out.stdout)
+        .filter(|u| u.key)
+        .ok_or_else(|| io::Error::other("ffmpeg produced no key frame"))?;
+    Ok(unit.data)
 }
 
 enum Msg {
@@ -141,6 +173,12 @@ impl Drop for Connection {
     }
 }
 
+#[derive(Clone, Copy, PartialEq)]
+enum Mode {
+    Standby,
+    Live,
+}
+
 struct Worker {
     s: Settings,
     hub: Arc<Hub>,
@@ -149,24 +187,48 @@ struct Worker {
     need_key: bool,
     failures: u32,
     retry_at: Instant,
+    mode: Mode,
+    shown: bool,
+    in_session: bool,
+    last_video: Instant,
+    next_standby: Instant,
 }
 
 impl Worker {
     fn new(s: Settings, hub: Arc<Hub>, overflow: Arc<AtomicBool>) -> Worker {
-        Worker { s, hub, overflow, conn: None, need_key: true, failures: 0, retry_at: Instant::now() }
+        let now = Instant::now();
+        Worker {
+            s, hub, overflow, conn: None, need_key: true, failures: 0, retry_at: now, mode: Mode::Standby,
+            shown: false, in_session: false, last_video: now, next_standby: now,
+        }
     }
 
     fn run(mut self, rx: Receiver<Msg>) {
-        for msg in rx {
-            match msg {
-                Msg::Video(unit, key) => self.video(unit, key),
-                Msg::End => {
-                    if let Some(c) = self.conn.take() {
-                        log(format!("projector: session ended after {} video frames", c.sent));
+        loop {
+            match rx.recv_timeout(Duration::from_millis(250)) {
+                Ok(Msg::Video(unit, key)) => {
+                    self.in_session = true;
+                    self.last_video = Instant::now();
+                    self.send(unit, key, Mode::Live);
+                }
+                Ok(Msg::End) => {
+                    if let Some(c) = &self.conn {
+                        log(format!("projector: session ended after {} frames on this connection", c.sent));
                     }
+                    self.in_session = false;
                     self.failures = 0;
                     self.retry_at = Instant::now();
                     self.hub.set_output("");
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(mpsc::RecvTimeoutError::Disconnected) => return,
+            }
+            // standby picture while nobody projects (or the source has paused for a while)
+            if (!self.in_session || self.last_video.elapsed() > Duration::from_secs(3)) && Instant::now() >= self.next_standby {
+                self.next_standby = Instant::now() + Duration::from_secs(1);
+                let frame = self.s.standby.lock().unwrap().clone();
+                if let Some(frame) = frame {
+                    self.send(frame, true, Mode::Standby);
                 }
             }
         }
@@ -175,25 +237,24 @@ impl Worker {
     fn fail(&mut self, why: &str) {
         self.conn = None;
         self.failures += 1;
-        // Every attempt makes the projector show "processing signal"; do not hammer it.
-        if self.failures >= 3 {
-            self.retry_at = Instant::now() + Duration::from_secs(1 << 30);
-            log(format!("projector: {why}; giving up for this session after 3 attempts"));
-            self.hub.set_output(format!("abgelehnt: {why}"));
-        } else {
-            self.retry_at = Instant::now() + Duration::from_secs(15);
-            log(format!("projector: {why}; next attempt in 15 s"));
-            self.hub.set_output(format!("Fehler: {why}, neuer Versuch in 15 s"));
-        }
+        // Every attempt makes the projector show "processing signal": back off, 15 s .. 2 min.
+        let wait = (15u64 << (self.failures - 1).min(3)).min(120);
+        self.retry_at = Instant::now() + Duration::from_secs(wait);
+        log(format!("projector: {why}; next attempt in {wait} s"));
+        self.hub.set_output(format!("Fehler: {why}, neuer Versuch in {wait} s"));
     }
 
-    fn video(&mut self, unit: Vec<u8>, key: bool) {
+    fn send(&mut self, unit: Vec<u8>, key: bool, mode: Mode) {
         if self.conn.is_none() {
             if Instant::now() < self.retry_at {
                 return;
             }
+            if mode == Mode::Standby && !self.standby_allowed() {
+                self.retry_at = Instant::now() + Duration::from_secs(30);
+                return;
+            }
             self.hub.set_output("verbindet …");
-            match self.connect() {
+            match self.connect(mode == Mode::Live && self.s.select_input) {
                 Ok(c) => self.conn = Some(c),
                 Err(e) => {
                     self.fail(&e.to_string());
@@ -222,6 +283,15 @@ impl Worker {
             }
             _ => return,
         }
+        if mode != self.mode {
+            // switching between standby picture and the laptop: start at a key frame
+            self.mode = mode;
+            self.need_key = true;
+            self.shown = false;
+            if mode == Mode::Live {
+                self.hub.request_idr();
+            }
+        }
         if self.overflow.swap(false, Ordering::Relaxed) {
             self.need_key = true;
             self.hub.request_idr();
@@ -242,17 +312,38 @@ impl Worker {
         }
         c.seq = c.seq.wrapping_add(1);
         c.sent += 1;
-        if c.sent == 1 {
-            self.hub.set_output("Bild läuft");
+        if !self.shown {
+            self.shown = true;
+            self.failures = 0;
+            let what = if mode == Mode::Live { "Bild vom Laptop" } else { "Wartebild" };
+            log(format!("projector: showing the {}", if mode == Mode::Live { "laptop picture" } else { "standby picture" }));
+            self.hub.set_output(what);
         }
-        if c.sent == 1 || c.sent == 30 || c.sent % 1800 == 0 {
-            log(format!("projector: {} video frames sent", c.sent));
+        if mode == Mode::Live && (c.sent % 1800 == 0) {
+            log(format!("projector: {} frames sent on this connection", c.sent));
         }
     }
 
-    fn connect(&mut self) -> io::Result<Connection> {
+    /// Standby only on a projector that is on and already on its LAN/WiFi input: someone
+    /// presenting over HDMI must not be switched away.
+    fn standby_allowed(&self) -> bool {
+        if !self.s.select_input {
+            return true;
+        }
+        match http::acer_post(&self.s.host, "/form/home_cgi", "QueryControl") {
+            Ok(state) => {
+                let on = !matches!(state.get("sysstatus").map(String::as_str), Some("0") | Some("3") | None);
+                on && state.get("displaysrc").map(String::as_str) == Some("33")
+            }
+            Err(_) => false,
+        }
+    }
+
+    fn connect(&mut self, switch_input: bool) -> io::Result<Connection> {
         let host = self.s.host.clone();
-        if self.s.select_input {
+        let stream_host = self.s.stream_host.clone();
+        self.shown = false;
+        if switch_input {
             match http::acer_post(&host, "/form/home_cgi", "QueryControl") {
                 Ok(state) if state.get("displaysrc").map(String::as_str) == Some("33") => {}
                 Ok(_) => {
@@ -265,7 +356,7 @@ impl Worker {
         }
 
         // 1. control channel
-        let mut control = match Control::open(&host, &self.s.name) {
+        let mut control = match Control::open(&stream_host, &self.s.name) {
             Ok(c) => Some(c),
             Err(e) => {
                 log(format!("projector: control channel failed: {e}"));
@@ -285,9 +376,9 @@ impl Worker {
         }
 
         // 3. picture connection
-        let address: SocketAddr = format!("{host}:{PORT}")
+        let address: SocketAddr = format!("{stream_host}:{PORT}")
             .parse()
-            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "projector_host must be an IP address"))?;
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "projector_stream_host must be an IP address"))?;
         let stream = TcpStream::connect_timeout(&address, Duration::from_secs(4))?;
         stream.set_nodelay(true)?;
         stream.set_write_timeout(Some(Duration::from_secs(5)))?;
@@ -313,7 +404,7 @@ impl Worker {
                 }
             });
         }
-        log(format!("projector: connected to {host}:{PORT}, stream requested"));
+        log(format!("projector: connected to {stream_host}:{PORT}, stream requested"));
         self.need_key = true;
         self.hub.request_idr();
         Ok(Connection { control, writer, alive, state, seq: 0, sent: 0 })
@@ -322,7 +413,7 @@ impl Worker {
     fn udp_handshake(&self) {
         let Ok(udp) = UdpSocket::bind("0.0.0.0:0") else { return };
         let _ = udp.set_read_timeout(Some(Duration::from_millis(300)));
-        let target = (self.s.host.as_str(), PORT);
+        let target = (self.s.stream_host.as_str(), PORT);
         let ask = |datagram: &[u8], wanted: &[u8]| -> Option<Vec<u8>> {
             for _ in 0..2 {
                 udp.send_to(datagram, target).ok()?;

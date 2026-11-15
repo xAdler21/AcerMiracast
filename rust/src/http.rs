@@ -31,10 +31,28 @@ pub fn request(method: &str, url: &str, body: &[u8], content_type: &str, timeout
     stream.write_all(&data)?;
     let mut reply = Vec::new();
     stream.take(256 * 1024).read_to_end(&mut reply)?;
-    let split = reply.windows(4).position(|w| w == b"\r\n\r\n").ok_or_else(|| invalid("incomplete answer"))?;
-    let status_line = String::from_utf8_lossy(&reply[..split]).lines().next().unwrap_or("").to_string();
+    let (head_end, body_start) = header_end(&reply).ok_or_else(|| invalid("incomplete answer"))?;
+    let status_line = String::from_utf8_lossy(&reply[..head_end]).lines().next().unwrap_or("").to_string();
     let status = status_line.split_whitespace().nth(1).and_then(|s| s.parse().ok()).ok_or_else(|| invalid("bad status"))?;
-    Ok((status, reply[split + 4..].to_vec()))
+    Ok((status, reply[body_start..].to_vec()))
+}
+
+/// End of the header block. The projector's GoAhead server mixes "\n" and "\r\n" line ends,
+/// so an empty line is "\n\n" or "\n\r\n".
+fn header_end(reply: &[u8]) -> Option<(usize, usize)> {
+    let mut i = 0;
+    while i < reply.len() {
+        if reply[i] == b'\n' {
+            if reply.get(i + 1) == Some(&b'\n') {
+                return Some((i, i + 2));
+            }
+            if reply.get(i + 1) == Some(&b'\r') && reply.get(i + 2) == Some(&b'\n') {
+                return Some((i, i + 3));
+            }
+        }
+        i += 1;
+    }
+    None
 }
 
 /// POST to the Acer projector's web interface. The answer looks like
@@ -84,5 +102,15 @@ mod tests {
         assert_eq!(m["pwr"], "1");
         assert_eq!(m["src"], "6");
         assert_eq!(m.len(), 3);
+    }
+
+    #[test]
+    fn goahead_header_end() {
+        // as read from the projector on 15.11.2026
+        let r = b"HTTP/1.0 200 OK\nServer: GoAhead-Webs\r\nPragma: no-cache\nContent-Type: text/html\n\n<html>\n{a:\"1\"}";
+        let (_, body) = super::header_end(r).unwrap();
+        assert_eq!(&r[body..], b"<html>\n{a:\"1\"}");
+        let r = b"HTTP/1.1 200 OK\r\nA: b\r\n\r\nX";
+        assert_eq!(&r[super::header_end(r).unwrap().1..], b"X");
     }
 }

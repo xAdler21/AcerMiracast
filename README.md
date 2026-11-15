@@ -5,7 +5,7 @@ of its own, and control that projector from a web panel.
 
 | Part | Where | What it does |
 |---|---|---|
-| `beacon/` | OpenWrt box (FRITZ!Box 4020) | Sends the Wi-Fi beacon that makes the room show up in Win+K, publishes its state as `http://<box>/beacon.json`, wakes the projector (Wake-on-LAN CGI). |
+| `beacon/` | OpenWrt box (FRITZ!Box 4020) | Sends the Wi-Fi beacon that makes the room show up in Win+K, publishes its state as `http://<box>/beacon.json`, wakes the projector (Wake-on-LAN CGI), relays the projector's streaming ports (`install-relay.sh`). |
 | `rust/` | VM | One static binary `acermiracast`: Win+K receiver (MICE TCP 7250, RTSP, RTP), picture output to the projector, web panel on port 8445. |
 | `receiver/` | - | Former Python version, kept for reference; no longer deployed. |
 
@@ -21,6 +21,15 @@ of its own, and control that projector from a web panel.
    - UDP 2425: greeting and mirror request; TCP 2425: hello, stream request, heartbeat, one
      H.264 access unit per message (`rust/src/ezdisplay.rs`)
 4. A low-rate JPEG preview for the panel comes from ffmpeg (optional).
+5. While nobody projects, the projector shows a standby picture ("Win + K drücken") - only if it
+   is on and already on its LAN/WiFi input, so HDMI use is never interrupted.
+
+The projector answers its streaming ports only inside its own subnet. The box (same subnet)
+relays them for the VM: `RECEIVER=10.21.0.232 PROJECTOR=10.1.34.179 sh install-relay.sh` on the
+box (DNAT+SNAT, only the VM's address), and `projector_stream_host` = box address in the config.
+
+Windows keeps the MICE connection (TCP 7250) open and silent for the whole projection; closing
+it ends the projection, so it has no read timeout.
 
 ## Build and deploy
 
@@ -39,7 +48,9 @@ Settings in `/etc/acermiracast/config.json` (kept on update, new keys are added)
 | Key | Meaning |
 |---|---|
 | `room_name` | name sent to the projector and shown in the panel |
-| `projector_host` | IP of the projector |
+| `projector_host` | IP of the projector (web interface) |
+| `projector_stream_host` | address for the streaming ports: the relaying box (empty = projector_host) |
+| `standby` | standby picture while nobody projects (default true; needs ffmpeg) |
 | `projector_control` | `acer_web`: switch to the LAN/WiFi input and show status via the projector's web page |
 | `wake_url` | Wake-on-LAN CGI on the box (projector off = not on the network) |
 | `video_mode` | `passthrough` (default) or `transcode` |

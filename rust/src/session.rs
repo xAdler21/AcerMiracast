@@ -178,7 +178,17 @@ impl Session {
         let mut session_id: Option<String> = None;
         let mut last_seen = Instant::now();
         let mut output = output;
+        // We are the RTSP client of the session: it times out (Session: ...;timeout=60) unless
+        // we send a request now and then. Windows tears it down after ~70 s otherwise.
+        let mut keepalive_every = Duration::from_secs(20);
+        let mut keepalive_at = Instant::now() + keepalive_every;
         loop {
+            if let Some(id) = &session_id {
+                if Instant::now() >= keepalive_at {
+                    keepalive_at = Instant::now() + keepalive_every;
+                    c.request("GET_PARAMETER", &url, &[("Session", id.clone())], "")?;
+                }
+            }
             if self.stop.load(Ordering::Relaxed) {
                 if let Some(id) = &session_id {
                     let _ = c.request("TEARDOWN", &url, &[("Session", id.clone())], "");
@@ -200,14 +210,23 @@ impl Session {
             if msg.is_response() {
                 let method = c.pending.remove(&cseq.parse().unwrap_or(0)).unwrap_or_default();
                 if msg.status() != 200 {
-                    if method == "SET_PARAMETER" {
-                        continue; // IDR request refused: not fatal
+                    if method == "SET_PARAMETER" || method == "GET_PARAMETER" {
+                        log(format!("RTSP: {method} was answered with {} (not fatal)", msg.first));
+                        continue; // IDR request / keep-alive refused: not fatal
                     }
                     return Err(io::Error::other(format!("{method} was answered with {}", msg.first)));
                 }
                 match method.as_str() {
                     "SETUP" => {
-                        let id = msg.headers.get("session").map(|s| s.split(';').next().unwrap_or("").to_string()).unwrap_or_default();
+                        let header = msg.headers.get("session").cloned().unwrap_or_default();
+                        let id = header.split(';').next().unwrap_or("").trim().to_string();
+                        let timeout = header
+                            .split(';')
+                            .find_map(|p| p.trim().strip_prefix("timeout=").and_then(|t| t.trim().parse::<u64>().ok()))
+                            .unwrap_or(60);
+                        keepalive_every = Duration::from_secs((timeout / 3).clamp(5, 30));
+                        keepalive_at = Instant::now() + keepalive_every;
+                        log(format!("RTSP: session {id}, timeout {timeout} s, keep-alive every {} s", keepalive_every.as_secs()));
                         c.request("PLAY", &url, &[("Session", id.clone())], "")?;
                         session_id = Some(id);
                     }
@@ -215,7 +234,10 @@ impl Session {
                         hub.update_session(|s| s.playing = true);
                         log("RTSP: PLAY accepted, stream is running");
                     }
-                    "TEARDOWN" => return Ok(()),
+                    "TEARDOWN" => {
+                        log("RTSP: TEARDOWN done");
+                        return Ok(());
+                    }
                     _ => {}
                 }
                 continue;
@@ -256,13 +278,15 @@ impl Session {
                     }
                     if let Some(chosen) = params.get("wfd_video_formats") {
                         let direct = o.passthrough && is_projector_format(chosen);
-                        log(format!(
-                            "RTSP: source chose video '{chosen}' -> {}",
-                            if output.is_none() { "panel only" } else if direct { "forwarded unchanged" } else { "re-encoded by ffmpeg" }
-                        ));
-                        hub.update_session(|s| s.video = if direct { "direkt".into() } else { "umgerechnet".into() });
                         let mut slot = pipeline.lock().unwrap();
-                        if slot.is_none() {
+                        if slot.is_some() {
+                            log(format!("RTSP: source renegotiated video '{chosen}'"));
+                        } else {
+                            log(format!(
+                                "RTSP: source chose video '{chosen}' -> {}",
+                                if output.is_none() { "panel only" } else if direct { "forwarded unchanged" } else { "re-encoded by ffmpeg" }
+                            ));
+                            hub.update_session(|s| s.video = if direct { "direkt".into() } else { "umgerechnet".into() });
                             *slot = Some(Pipeline::new(hub.clone(), output.take(), direct, &o.video, o.preview));
                         }
                     }
@@ -276,6 +300,7 @@ impl Session {
                             c.request("SETUP", &url, &[("Transport", format!("RTP/AVP/UDP;unicast;client_port={}", o.rtp_port))], "")?;
                         }
                         Some("TEARDOWN") => {
+                            log("RTSP: the source asks to end the session (trigger TEARDOWN)");
                             if let Some(id) = &session_id {
                                 c.request("TEARDOWN", &url, &[("Session", id.clone())], "")?;
                             } else {
@@ -326,13 +351,18 @@ fn receive_rtp(sock: UdpSocket, pipeline: Arc<Mutex<Option<Pipeline>>>, stop: Ar
         }
         packets += 1;
         let seq = u16::from_be_bytes([d[2], d[3]]);
-        let exp = *expected.get_or_insert(seq);
-        if seq.wrapping_sub(exp) >= 0x8000 {
+        let mut exp = *expected.get_or_insert(seq);
+        let ahead = seq.wrapping_sub(exp);
+        if ahead >= 0x8000 {
             continue; // older than what was already passed on
+        }
+        if ahead > 512 {
+            // the source restarted its numbering (e.g. after renegotiating): follow it
+            held.clear();
+            exp = seq;
         }
         held.insert(seq, d[offset..end].to_vec());
         let mut slot = pipeline.lock().unwrap();
-        let mut exp = exp;
         loop {
             if let Some(payload) = held.remove(&exp) {
                 if let Some(p) = slot.as_mut() {
