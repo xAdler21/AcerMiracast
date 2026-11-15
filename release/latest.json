@@ -1,10 +1,10 @@
 {
     "name":  "acermiracast",
-    "version":  "0.1.1",
+    "version":  "0.1.2",
     "file":  "acermiracast.tar.gz",
-    "folder":  "acermiracast-0.1.1",
-    "sha256":  "d99c087926d0c8ee106ab0b6621a7ee7631dd82ca6f0bd3efa35ab52b20d9add",
-    "size":  590084,
-    "built":  "2026-11-15T15:32:53Z",
+    "folder":  "acermiracast-0.1.2",
+    "sha256":  "b0dda230cdc949cc594df5f40b8f9f7f91a49a2b77c9fc73a0d9837c2d517cc0",
+    "size":  590414,
+    "built":  "2026-11-15T15:53:01Z",
     "install":  "sudo bash install.sh"
 }

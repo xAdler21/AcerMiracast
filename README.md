@@ -94,8 +94,10 @@ Settings in `/etc/acermiracast/config.json` (kept on update, new keys are added)
 Ports: TCP 8445 (panel), TCP 7250 and UDP 50000 (from the Windows device); the receiver connects
 out to the Windows device on TCP 7236 and to the projector on TCP 63630, 2425 and UDP 2425.
 
-The panel has two pages on the same port, without a login of its own (the Plintus app puts its
-PIN in front of `/admin`; the HTTP interface stays open for Home Assistant):
+The panel has two pages on the same port, without a login of its own (the HTTP interface stays
+open for Home Assistant). The button "Verwaltung" at the top of `/` leads to `/admin`, "Zurück"
+leads back; both keep `?name=` and ask first while a screen share of this page runs (leaving the
+page ends it):
 
 | Page | Content |
 |---|---|

@@ -78,11 +78,21 @@
        border-radius: 8px; padding: 8px; max-width: 100%; }
   .small { font-size: .88rem; }
   body[data-page="open"] .admin-only { display: none !important; }
+  .top { grid-column: 1 / -1; display: flex; justify-content: flex-end; }
+  .btn { font: inherit; color: var(--text); text-decoration: none; border: 1px solid var(--border);
+         border-radius: 10px; padding: 10px 16px; }
+  .btn:hover { border-color: var(--accent); }
+  body[data-page="open"] #to-home, body[data-page="admin"] #to-admin { display: none; }
+  body[data-page="admin"] .top { justify-content: flex-start; }
   body[data-page="admin"] .admin-gap { margin-top: 16px; }
 </style>
 </head>
 <body data-page="open">
 <main>
+  <nav class="wide top">
+    <a class="btn" id="to-admin" href="admin">⚙ Verwaltung</a>
+    <a class="btn" id="to-home" href="./">← Zurück</a>
+  </nav>
   <section class="wide">
     <h2><span class="dot" id="p-dot"></span>Beamer<span class="state" id="p-state">…</span></h2>
     <div id="p-body"></div>
@@ -188,6 +198,16 @@ const $ = id => document.getElementById(id);
 // "/" is the open panel, "/admin" the whole one (the Plintus app puts its PIN in front of it)
 const ADMIN = document.body.dataset.page === "admin";
 if (ADMIN) document.title = "Beamer – Verwaltung";
+// switching pages keeps ?name=…; leaving the page ends a screen share started here
+for (const id of ["to-admin", "to-home"]) {
+  const a = $(id);
+  a.href = a.getAttribute("href") + location.search;
+  a.onclick = e => {
+    if (typeof share !== "undefined" && share.running &&
+        !confirm("Du teilst gerade deinen Bildschirm. Beim Seitenwechsel endet das Teilen. Trotzdem wechseln?"))
+      e.preventDefault();
+  };
+}
 let streamShown = false;
 let lastStatus = null;
 
