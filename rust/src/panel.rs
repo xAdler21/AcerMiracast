@@ -1,8 +1,13 @@
 //! Web panel: status of projector, beacon box and receiver; projector control.
 //!
-//!   GET  /                 the panel
+//!   GET  /                 the open panel (basic functions, screen sharing)
+//!   GET  /admin            the whole panel; the Plintus app puts its own PIN in front of it
 //!   GET  /api/status       everything the panel shows, as JSON
-//!   POST /api/projector    {"action": "power", "value": "on"|"off"} | {"action": "input", "value": "33"}
+//!   GET  /api/audio        sound level of the running session
+//!   GET  /api/share        WebSocket: screen sharing from the browser (share.rs)
+//!   GET  /api/state        the short state for home automation (power, input, hide, freeze, presenter)
+//!   POST /api/projector    {"action": "power", "value": "on"|"off"|"toggle"} | {"action": "input", "value": "hdmi1"|"33"}
+//!                          {"action": "hide"|"freeze", "value": "on"|"off"|"toggle"} and the panel's own actions
 //!   GET  /stream           live picture of the running session (MJPEG)
 //!   GET  /frame.jpg        newest frame
 
@@ -17,6 +22,7 @@ use serde_json::{Value, json};
 use crate::Config;
 use crate::admin;
 use crate::ezdisplay::{Output, Remote};
+use crate::share::{self, ShareOptions};
 use crate::http::{self, acer_post};
 use crate::hub::{Hub, log};
 
@@ -25,6 +31,21 @@ const ACER_INPUTS: [(&str, &str); 8] = [
     ("3", "HDMI 1"), ("6", "HDMI 2"), ("33", "Drahtlos"), ("20", "VGA 1"),
     ("21", "VGA 2"), ("22", "Video"), ("34", "Medien"), ("35", "USB"),
 ];
+/// Names of the inputs for home automation.
+const INPUT_NAMES: [(&str, &str); 8] = [
+    ("hdmi1", "3"), ("hdmi2", "6"), ("wireless", "33"), ("vga1", "20"),
+    ("vga2", "21"), ("video", "22"), ("media", "34"), ("usb", "35"),
+];
+
+/// "on" / "off" / "toggle" (or nothing) of a home automation command.
+fn wanted(value: &str) -> Result<Option<bool>, String> {
+    match value {
+        "on" | "1" | "true" => Ok(Some(true)),
+        "off" | "0" | "false" => Ok(Some(false)),
+        "toggle" | "" => Ok(None),
+        _ => Err("Wert muss on, off oder toggle sein".into()),
+    }
+}
 
 /// Settings of the projector's control page (/form/control_cgi) that take a value ("key=value").
 const ACER_SETTINGS: [&str; 14] = ["src", "mod", "aks", "apr", "prj", "lgo", "bri", "con", "vks", "hks", "gam", "ctp", "vol", "zom"];
@@ -137,6 +158,15 @@ impl Monitor {
 
     /// Admin commands (admin.rs) and actions through the open projector connection.
     pub fn admin_command(&self, action: &str, value: &str, fields: &Value) -> Result<Value, String> {
+        if action == "p2p_mode" {
+            return self.set_p2p_mode(value);
+        }
+        if action == "session_stop" {
+            return if self.hub.stop_session() { Ok(Value::Null) } else { Err("Gerade zeigt niemand".into()) };
+        }
+        if action == "audio_target" {
+            return self.hub.audio.set_target(value).map(|_| Value::Null);
+        }
         let remote = match action {
             "key" => Some(Remote::Key(value.parse().ok().filter(|k| (10..=15).contains(k)).ok_or("Unbekannte Taste")?)),
             "volume" => Some(Remote::Volume { up: value == "up" }),
@@ -160,14 +190,50 @@ impl Monitor {
         result
     }
 
+    /// Wi-Fi Direct on the box (install-p2p.sh): "off", "fallback" or "only". The box switches
+    /// in the background (about 20 s, the beacon is gone for a moment meanwhile).
+    fn set_p2p_mode(&self, mode: &str) -> Result<Value, String> {
+        if !matches!(mode, "off" | "fallback" | "only") {
+            return Err("Unbekannte Einstellung (off, fallback oder only)".into());
+        }
+        let host = &self.config.beacon_host;
+        if host.is_empty() {
+            return Err("Kein Funk-Sender eingerichtet (beacon_host)".into());
+        }
+        if self.hub.session().is_some() {
+            return Err("Gerade läuft eine Übertragung; Umschalten würde sie unterbrechen. Bitte danach umschalten.".into());
+        }
+        let (status, body) = http::request("POST", &format!("http://{host}/cgi-bin/p2p-mode"), mode.as_bytes(),
+                                           "text/plain", Duration::from_secs(10))
+            .map_err(|_| "Der Funk-Sender antwortet nicht".to_string())?;
+        let reply: Value = serde_json::from_slice(&body).map_err(|_| {
+            format!("Der Funk-Sender kennt den Schalter nicht (HTTP {status}): install-p2p.sh auf der Box neu ausführen")
+        })?;
+        if reply["ok"] != true {
+            return Err(match reply["error"].as_str() {
+                Some("busy") => "Der Funk-Sender schaltet gerade noch um".to_string(),
+                Some(e) => format!("Funk-Sender: {e}"),
+                None => "Der Funk-Sender hat nicht umgeschaltet".to_string(),
+            });
+        }
+        {
+            let mut st = self.state.lock().unwrap();
+            st.beacon["p2p"] = json!(mode);
+            st.beacon["p2p_busy"] = json!(true);
+        }
+        log(format!("panel: Wi-Fi Direct mode {mode}"));
+        Ok(Value::Null)
+    }
+
     fn run(&self) {
         let mut beacon_due = Instant::now();
         loop {
             self.poll_projector();
             if Instant::now() >= beacon_due {
                 let ok = self.poll_beacon();
+                let switching = self.state.lock().unwrap().beacon["p2p_busy"] == true;
                 // a failed poll is repeated soon: the box answers slowly now and then
-                beacon_due = Instant::now() + Duration::from_secs(if ok { 20 } else { 4 });
+                beacon_due = Instant::now() + Duration::from_secs(if !ok { 4 } else if switching { 5 } else { 20 });
             }
             let (lock, cond) = &self.poke;
             let mut poked = lock.lock().unwrap();
@@ -288,6 +354,35 @@ impl Monitor {
         }
         let current = self.state.lock().unwrap().projector.clone();
         let reachable = current["reachable"] == true;
+        // short forms for home automation
+        match action {
+            "power" if value == "toggle" => {
+                let on = current["power"] == "on";
+                return self.command("power", if on { "off" } else { "on" });
+            }
+            "input" => {
+                if let Some((_, code)) = INPUT_NAMES.iter().find(|(n, _)| n.eq_ignore_ascii_case(value)) {
+                    return self.command("input", code);
+                }
+            }
+            "hide" | "freeze" => {
+                let key = if action == "hide" { "hid" } else { "frz" };
+                let want = wanted(value)?;
+                if current["power"] != "on" {
+                    return Err("Der Beamer ist nicht eingeschaltet".into());
+                }
+                if let Some(want) = want {
+                    // the button only toggles: ask the projector first
+                    let fresh = acer_post(&host, "/form/control_cgi", "QueryControl")
+                        .map_err(|_| "Der Beamer antwortet nicht".to_string())?;
+                    if (fresh.get(key).map(String::as_str) == Some("1")) == want {
+                        return Ok(());
+                    }
+                }
+                return self.command("press", key);
+            }
+            _ => {}
+        }
         let result = (|| -> Result<(), String> {
             let fail = |_| "Der Beamer antwortet nicht".to_string();
             if action == "power" && value == "on" {
@@ -352,6 +447,20 @@ impl Monitor {
         result
     }
 
+    /// The short state for home automation; served from what the monitor already knows.
+    fn short_state(&self) -> Value {
+        let p = self.state.lock().unwrap().projector.clone();
+        let on = p["power"] == "on";
+        let setting = |k: &str| on && p["settings"][k] == "1";
+        let input = p["input"].as_str()
+            .and_then(|c| INPUT_NAMES.iter().find(|(_, code)| *code == c))
+            .map(|(n, _)| *n);
+        let presenter = self.hub.session().map(|s| s.source);
+        json!({"power": p.get("power").cloned().unwrap_or(json!("unknown")), "input": input,
+               "input_label": p.get("input_label").cloned().unwrap_or(Value::Null),
+               "hide": setting("hid"), "freeze": setting("frz"), "presenter": presenter})
+    }
+
     fn status(&self) -> Value {
         let (projector, beacon) = {
             let st = self.state.lock().unwrap();
@@ -365,27 +474,36 @@ impl Monitor {
         let guests: Vec<Value> = self.hub.guests().into_iter()
             .map(|g| json!({"name": g.name, "ip": g.ip, "fullscreen": g.fullscreen})).collect();
         json!({"projector": projector, "beacon": beacon, "admin": *self.admin.lock().unwrap(), "guests": guests,
-               "receiver": {"session": session, "name": self.config.room_name}, "time": now})
+               "audio": self.hub.audio.status(),
+               "receiver": {"session": session, "name": self.config.room_name, "wifi_direct": self.config.wifi_direct},
+               "time": now})
     }
 }
 
-pub fn start(bind: &str, port: u16, monitor: Arc<Monitor>, hub: Arc<Hub>) -> io::Result<()> {
+pub fn start(bind: &str, port: u16, monitor: Arc<Monitor>, hub: Arc<Hub>, share: ShareOptions) -> io::Result<()> {
     let listener = TcpListener::bind((bind, port))?;
+    let share = Arc::new(share);
     thread::spawn(move || {
         for conn in listener.incoming().flatten() {
-            let (monitor, hub) = (monitor.clone(), hub.clone());
+            let (monitor, hub, share) = (monitor.clone(), hub.clone(), share.clone());
             thread::spawn(move || {
-                let _ = handle(conn, &monitor, &hub);
+                let _ = handle(conn, &monitor, &hub, &share);
             });
         }
     });
     Ok(())
 }
 
+/// The page, as the open panel or as the admin panel.
+fn page(admin: bool) -> String {
+    if admin { PAGE.replacen("<body data-page=\"open\">", "<body data-page=\"admin\">", 1) } else { PAGE.to_string() }
+}
+
 fn respond(stream: &mut TcpStream, code: u16, content_type: &str, body: &[u8]) -> io::Result<()> {
     let reason = match code {
         200 => "OK",
         400 => "Bad Request",
+        403 => "Forbidden",
         404 => "Not Found",
         415 => "Unsupported Media Type",
         502 => "Bad Gateway",
@@ -399,13 +517,14 @@ fn respond(stream: &mut TcpStream, code: u16, content_type: &str, body: &[u8]) -
     stream.write_all(body)
 }
 
-fn handle(mut stream: TcpStream, monitor: &Monitor, hub: &Hub) -> io::Result<()> {
+fn handle(mut stream: TcpStream, monitor: &Monitor, hub: &Arc<Hub>, share: &ShareOptions) -> io::Result<()> {
     stream.set_read_timeout(Some(Duration::from_secs(10)))?;
     let mut reader = BufReader::new(stream.try_clone()?);
     let mut first = String::new();
     reader.by_ref().take(2048).read_line(&mut first)?;
     let mut content_type = String::new();
     let mut length = 0usize;
+    let (mut upgrade, mut ws_key, mut origin, mut host) = (String::new(), String::new(), String::new(), String::new());
     loop {
         let mut line = String::new();
         if reader.by_ref().take(4096).read_line(&mut line)? == 0 || line.trim().is_empty() {
@@ -415,6 +534,10 @@ fn handle(mut stream: TcpStream, monitor: &Monitor, hub: &Hub) -> io::Result<()>
             match k.trim().to_ascii_lowercase().as_str() {
                 "content-type" => content_type = v.trim().to_ascii_lowercase(),
                 "content-length" => length = v.trim().parse().unwrap_or(0),
+                "upgrade" => upgrade = v.trim().to_ascii_lowercase(),
+                "sec-websocket-key" => ws_key = v.trim().to_string(),
+                "origin" => origin = v.trim().to_ascii_lowercase(),
+                "host" => host = v.trim().to_ascii_lowercase(),
                 _ => {}
             }
         }
@@ -423,8 +546,20 @@ fn handle(mut stream: TcpStream, monitor: &Monitor, hub: &Hub) -> io::Result<()>
     let (method, target) = (parts.next().unwrap_or(""), parts.next().unwrap_or(""));
     let path = target.split('?').next().unwrap_or("");
     match (method, path) {
-        ("GET", "/") => respond(&mut stream, 200, "text/html; charset=utf-8", PAGE.as_bytes()),
+        ("GET", "/") => respond(&mut stream, 200, "text/html; charset=utf-8", page(false).as_bytes()),
+        ("GET", "/admin") => respond(&mut stream, 200, "text/html; charset=utf-8", page(true).as_bytes()),
+        ("GET", "/api/audio") => respond(&mut stream, 200, "application/json", hub.audio.status().to_string().as_bytes()),
+        ("GET", "/api/share") => {
+            // A WebSocket is not protected by CORS: only pages of this panel may open it.
+            let own = origin.split_once("://").is_some_and(|(_, h)| h == host);
+            if upgrade != "websocket" || ws_key.is_empty() || !own {
+                return respond(&mut stream, 403, "text/plain", b"WebSocket only from this panel");
+            }
+            let peer = stream.peer_addr()?.ip();
+            share::serve(stream, reader, &ws_key, peer, hub.clone(), monitor.output.clone(), share)
+        }
         ("GET", "/api/status") => respond(&mut stream, 200, "application/json", monitor.status().to_string().as_bytes()),
+        ("GET", "/api/state") => respond(&mut stream, 200, "application/json", monitor.short_state().to_string().as_bytes()),
         ("GET", "/frame.jpg") => match hub.wait_frame(u64::MAX, Duration::ZERO).1 {
             Some(f) => respond(&mut stream, 200, "image/jpeg", &f),
             None => respond(&mut stream, 503, "text/plain", b"no session"),
@@ -459,7 +594,7 @@ fn handle(mut stream: TcpStream, monitor: &Monitor, hub: &Hub) -> io::Result<()>
             let Some((action, value, fields)) = parsed else {
                 return respond(&mut stream, 400, "application/json", json!({"ok": false, "error": "Ungültige Anfrage"}).to_string().as_bytes());
             };
-            let picture = action == "power" || action == "input" || action == "press" || action.starts_with("set:");
+            let picture = matches!(action.as_str(), "power" | "input" | "press" | "hide" | "freeze") || action.starts_with("set:");
             let result = if picture { monitor.command(&action, &value).map(|_| Value::Null) } else { monitor.admin_command(&action, &value, &fields) };
             // never log form fields: they may hold passwords
             match &result {
@@ -475,5 +610,17 @@ fn handle(mut stream: TcpStream, monitor: &Monitor, hub: &Hub) -> io::Result<()>
             respond(&mut stream, code, "application/json", reply.to_string().as_bytes())
         }
         _ => respond(&mut stream, 404, "text/plain", b"not found"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn admin_page_only_changes_the_body_tag() {
+        let admin = super::page(true);
+        assert!(admin.contains("<body data-page=\"admin\">"));
+        // the CSS rule that hides admin sections on the open page must stay as it is
+        assert!(admin.contains("body[data-page=\"open\"] .admin-only"));
+        assert!(super::page(false).contains("<body data-page=\"open\">"));
     }
 }

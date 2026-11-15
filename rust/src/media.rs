@@ -13,7 +13,8 @@ use std::thread;
 
 use crate::ezdisplay::Output;
 use crate::hub::{Hub, log};
-use crate::ts::{AccessUnits, AudSplitter, TsDemux};
+use crate::audio::wfd_lpcm;
+use crate::ts::{AccessUnits, AudSplitter, Es, TsDemux, clamp_sps_level};
 
 pub struct VideoSize {
     pub width: u32,
@@ -48,14 +49,16 @@ impl Feeder {
     }
 }
 
-fn ffmpeg_input() -> Vec<String> {
-    [
-        "-hide_banner", "-loglevel", "error", "-nostdin", "-fflags", "nobuffer", "-flags", "low_delay",
-        "-probesize", "200000", "-analyzeduration", "500000", "-f", "mpegts", "-i", "pipe:0", "-an",
-    ]
-    .iter()
-    .map(|s| s.to_string())
-    .collect()
+/// ffmpeg reading from stdin: MPEG-TS (Win+K) or raw H.264 access units (screen sharing).
+fn ffmpeg_input(raw_h264: bool) -> Vec<String> {
+    let format: &[&str] = if raw_h264 { &["-f", "h264", "-framerate", "30"] } else { &["-f", "mpegts"] };
+    ["-hide_banner", "-loglevel", "error", "-nostdin", "-fflags", "nobuffer", "-flags", "low_delay",
+     "-probesize", "200000", "-analyzeduration", "500000"]
+        .iter()
+        .chain(format)
+        .chain(&["-i", "pipe:0", "-an"])
+        .map(|s| s.to_string())
+        .collect()
 }
 
 fn spawn(args: Vec<String>) -> Option<Child> {
@@ -69,6 +72,7 @@ fn spawn(args: Vec<String>) -> Option<Child> {
 }
 
 pub struct Pipeline {
+    hub: Arc<Hub>,
     demux: TsDemux,
     units: AccessUnits,
     output: Option<Output>,
@@ -76,12 +80,25 @@ pub struct Pipeline {
     preview: Option<(Child, Feeder)>,
     transcoder: Option<(Child, Feeder)>,
     pub frames: Arc<AtomicU64>,
+    audio_seen: bool,
 }
 
 impl Pipeline {
+    /// Win+K: MPEG-TS in.
     pub fn new(hub: Arc<Hub>, output: Option<Output>, passthrough: bool, size: &VideoSize, preview: Option<(u32, u32)>) -> Pipeline {
+        Self::build(hub, output, passthrough, size, preview, false)
+    }
+
+    /// Screen sharing from the panel: H.264 access units in, already in the projector's format.
+    pub fn new_h264(hub: Arc<Hub>, output: Option<Output>, size: &VideoSize, preview: Option<(u32, u32)>) -> Pipeline {
+        Self::build(hub, output, true, size, preview, true)
+    }
+
+    fn build(hub: Arc<Hub>, output: Option<Output>, passthrough: bool, size: &VideoSize, preview: Option<(u32, u32)>,
+             raw_h264: bool) -> Pipeline {
         let frames = Arc::new(AtomicU64::new(0));
         let mut p = Pipeline {
+            hub: hub.clone(),
             demux: TsDemux::default(),
             units: AccessUnits::default(),
             output: output.clone(),
@@ -89,9 +106,10 @@ impl Pipeline {
             preview: None,
             transcoder: None,
             frames: frames.clone(),
+            audio_seen: false,
         };
         if let Some((fps, width)) = preview {
-            let mut args = ffmpeg_input();
+            let mut args = ffmpeg_input(raw_h264);
             args.extend(
                 ["-vf", &format!("fps={fps},scale={width}:-2,format=yuvj420p"), "-q:v", "6", "-f", "mjpeg", "pipe:1"]
                     .iter()
@@ -106,7 +124,7 @@ impl Pipeline {
             }
         }
         if let (Some(out), false) = (output, passthrough) {
-            let mut args = ffmpeg_input();
+            let mut args = ffmpeg_input(raw_h264);
             let (w, h, fps) = (size.width, size.height, size.fps);
             args.extend(
                 [
@@ -152,14 +170,40 @@ impl Pipeline {
             f.feed(ts);
         }
         let (units, frames, output, passthrough) = (&mut self.units, &self.frames, &self.output, self.passthrough);
-        self.demux.feed(ts, &mut |es| {
-            frames.fetch_add(1, Ordering::Relaxed);
-            if passthrough {
-                if let (Some(out), Some(unit)) = (output, units.build(es)) {
-                    out.send_video(unit.data, unit.key);
+        let (hub, audio_seen) = (&self.hub, &mut self.audio_seen);
+        self.demux.feed(ts, &mut |es| match es {
+            Es::Video(es) => {
+                frames.fetch_add(1, Ordering::Relaxed);
+                if passthrough {
+                    if let (Some(out), Some(unit)) = (output, units.build(es)) {
+                        out.send_video(unit.data, unit.key);
+                    }
+                }
+            }
+            Es::Audio { data, pts_us } => {
+                if !*audio_seen {
+                    // the LPCM header differs between sources: log it once to check the parsing
+                    *audio_seen = true;
+                    let head: Vec<String> = data.iter().take(8).map(|b| format!("{b:02x}")).collect();
+                    log(format!("Win+K audio: LPCM packets of {} bytes, first bytes {}", data.len(), head.join(" ")));
+                }
+                if let Some((_, samples)) = wfd_lpcm(data) {
+                    hub.audio.push("Win+K", pts_us, 48000, 2, &samples);
                 }
             }
         });
+    }
+
+    /// One H.264 access unit (Annex B) from the browser.
+    pub fn feed_h264(&mut self, au: &mut [u8]) {
+        clamp_sps_level(au, 31);
+        if let Some((_, f)) = &self.preview {
+            f.feed(au);
+        }
+        self.frames.fetch_add(1, Ordering::Relaxed);
+        if let (Some(out), Some(unit)) = (&self.output, self.units.build(au)) {
+            out.send_video(unit.data, unit.key);
+        }
     }
 }
 

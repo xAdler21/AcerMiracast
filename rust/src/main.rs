@@ -11,6 +11,7 @@
 //!   4. The H.264 goes to the projector (ezdisplay.rs), a JPEG preview to the panel.
 
 mod admin;
+mod audio;
 mod control;
 mod ezdisplay;
 mod http;
@@ -18,7 +19,9 @@ mod hub;
 mod media;
 mod panel;
 mod session;
+mod share;
 mod ts;
+mod ws;
 
 use std::io::Read;
 use std::net::{IpAddr, SocketAddr, TcpListener, TcpStream};
@@ -51,6 +54,8 @@ pub struct Config {
     pub video_height: u32,
     pub video_fps: u32,
     pub select_input: bool,
+    /// where the sound of a session goes (audio.rs); "none" = dropped
+    pub audio_target: String,
 }
 
 impl Config {
@@ -84,6 +89,7 @@ impl Config {
             video_height: n("video_height", 720),
             video_fps: n("video_fps", 30),
             select_input: s("projector_control", "acer_web") == "acer_web",
+            audio_target: s("audio_target", "none"),
         }
     }
 }
@@ -228,11 +234,11 @@ impl Mice {
             frames: 0,
             video: String::new(),
         };
-        if let Err(busy) = self.hub.begin_session(info) {
+        let stop = Arc::new(AtomicBool::new(false));
+        if let Err(busy) = self.hub.begin_session(info, stop.clone()) {
             log(format!("busy with '{busy}', ignoring '{name}'"));
             return false;
         }
-        let stop = Arc::new(AtomicBool::new(false));
         *self.current.lock().unwrap() = Some((ip, stop.clone()));
         thread::spawn(move || {
             log(format!("session start: '{name}' from {ip}"));
@@ -288,7 +294,7 @@ fn wifi_direct(mice: Arc<Mice>, box_host: String, rtp_port: u16) {
 fn main() {
     let a = args();
     let config = Config::load(&a.config);
-    let hub = Hub::new();
+    let hub = Hub::new(&config.audio_target);
 
     let use_projector = config.picture_output == "ezdisplay" && !config.projector_host.is_empty();
     let standby = Arc::new(Mutex::new(None));
@@ -344,7 +350,11 @@ fn main() {
 
     if a.http_port != 0 {
         let monitor = panel::Monitor::start(config.clone(), hub.clone(), output.clone());
-        if let Err(e) = panel::start(&a.bind, a.http_port, monitor, hub.clone()) {
+        let share = share::ShareOptions {
+            video: VideoSize { width: config.video_width, height: config.video_height, fps: config.video_fps },
+            preview: options.preview,
+        };
+        if let Err(e) = panel::start(&a.bind, a.http_port, monitor, hub.clone(), share) {
             log(format!("web panel could not listen on port {}: {e}", a.http_port));
             std::process::exit(1);
         }

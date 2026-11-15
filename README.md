@@ -46,6 +46,19 @@ The router passes the box's packets to the VM only as answers, so the VM connect
 `p2p.json`, connects to box:7236 and keeps the UDP path open by sending to box:50000
 (`"wifi_direct": true`). `REMOVE=1 sh install-p2p.sh` switches it off again.
 
+Three modes, switched in the panel (card "Funk-Sender", with an explanation of each) or on the box
+with `acer-p2p-mode <mode>`; the box keeps the mode across reboots and reinstalls:
+
+| Mode | Beacon tells Windows | Effect |
+|---|---|---|
+| `only` | only the Wi-Fi Direct device | every laptop uses Wi-Fi Direct at once, whatever WLAN it is in |
+| `fallback` | the VM address and the Wi-Fi Direct device | Windows tries the network first and uses Wi-Fi Direct after that timed out - slow in isolated WLANs |
+| `off` | only the VM address | Wi-Fi Direct stopped; only laptops whose network reaches the VM can project |
+
+The VM stays the receiver in every mode; only the way the laptop's video reaches it changes. The
+panel switches through `http://<box>/cgi-bin/p2p-mode`, which takes commands only from the
+`RECEIVER` address; switching is refused while somebody projects (the beacon restarts, about 20 s).
+
 Windows keeps the MICE connection (TCP 7250) open and silent for the whole projection; closing
 it ends the projection, so it has no read timeout.
 
@@ -76,9 +89,49 @@ Settings in `/etc/acermiracast/config.json` (kept on update, new keys are added)
 | `video_width`, `video_height`, `video_fps` | picture the projector takes (1280x720x30 on the Acer P5) |
 | `beacon_host` | IP of the beacon box |
 | `wifi_direct` | take Win+K connections that come over Wi-Fi Direct through the box (needs `install-p2p.sh` on the box) |
+| `audio_target` | where the sound of a session goes (`rust/src/audio.rs`); for now only `none` (dropped, level shown in the panel) |
 
 Ports: TCP 8445 (panel), TCP 7250 and UDP 50000 (from the Windows device); the receiver connects
 out to the Windows device on TCP 7236 and to the projector on TCP 63630, 2425 and UDP 2425.
+
+The panel has two pages on the same port, without a login of its own (the Plintus app puts its
+PIN in front of `/admin`; the HTTP interface stays open for Home Assistant):
+
+| Page | Content |
+|---|---|
+| `/` | power, inputs, hide, freeze, volume of the transmission, screen sharing, who presents (preview, sound level, "Übertragung beenden"), disconnecting presenters, requests of other presenters |
+| `/admin` | everything: also picture settings, remote-control keys, split screen, administration, sound target, beacon box and Wi-Fi Direct mode |
+
+### Screen sharing from the panel
+
+"Bildschirm teilen" sends the screen of the PC the panel runs on, without Win+K
+(`rust/src/share.rs`, `rust/src/ws.rs`):
+
+1. The browser captures the screen (`getDisplayMedia`), scales it to 1280x720 (black bars keep
+   the aspect ratio) and encodes H.264 Constrained Baseline itself (WebCodecs `avc1.42E01F`,
+   Annex B, about 3.5 Mbit/s, a key frame every 2 s and whenever the projector asks for one).
+2. Each access unit goes as a binary WebSocket message to `GET /api/share` on port 8445
+   (`0x01 key pts_us | H.264`); sound as `0x02 channels pts_us rate | PCM s16le`.
+3. The VM passes the video to the projector unchanged, like the Win+K passthrough; it only lowers
+   `level_idc` in the SPS to 3.1 (hardware encoders write 4.1).
+
+The share occupies the receiver like a Win+K session. If somebody presents, the panel asks first
+and ends that session (anybody may take over). The WebSocket only accepts pages of the panel
+itself (Origin = Host).
+
+Browsers offer screen capture and WebCodecs only on secure pages (https or localhost). The panel
+stays on http, so the browser must treat `http://10.21.0.232:8445` as secure: the Plintus app
+(WebView2) starts with `--unsafely-treat-insecure-origin-as-secure=http://10.21.0.232:8445`; in
+Chrome or Edge the same is set under `chrome://flags` -> "Insecure origins treated as secure".
+
+### Sound
+
+The sound of both sources ends in one sink (`rust/src/audio.rs`): Win+K sends LPCM 48 kHz stereo
+in the MPEG-TS (stream type 0x83, read in `rust/src/ts.rs`), the screen sharing sends PCM from
+the chosen source (none, system sound of the shared screen, or an input device; a specific
+Windows output device needs a virtual audio cable as input). The sink shows the level in the
+panel (`GET /api/audio`) and hands the samples with their timestamps to the target in
+`audio_target`. The only target so far is `none`; new targets implement `AudioTarget`.
 
 The panel covers the projector's own web pages and the Acer eDisplay Pro functions that work
 with this firmware:
@@ -93,6 +146,21 @@ with this firmware:
 Passwords are never shown: the projector hands them out to anyone, the panel only sets new ones.
 
 Panel for the Plintus app: `http://10.21.0.232:8445/` in the hub under Einstellungen -> Beamer.
+
+### Home Assistant
+
+Complete guide with sensors, switches, input selection, a wall tablet dashboard and automations:
+[docs/home-assistant.md](docs/home-assistant.md). In short: `GET /api/state` gives `{"power": "on|off|warming|cooling", "input": "hdmi1", "hide": false,
+"freeze": false, "presenter": "YOGA"}`; `POST /api/projector` (JSON) takes the commands:
+
+| action | value |
+|---|---|
+| `power` | `on`, `off`, `toggle` |
+| `input` | `hdmi1`, `hdmi2`, `wireless`, `vga1`, `vga2`, `video`, `media`, `usb` |
+| `hide`, `freeze` | `on`, `off`, `toggle` (the projector's button only toggles; on/off reads its state first) |
+
+The JSON content type is required on purpose: a web page in a browser cannot send it to the
+panel without a preflight, which the panel never answers.
 
 ## Updates through the Plintus hub
 

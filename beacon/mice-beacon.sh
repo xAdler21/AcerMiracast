@@ -16,6 +16,8 @@
 #   RADIO=radio0 wifi-device to use
 #   REMOVE=1     remove the beacon again (no other arguments needed)
 #   P2P_ADDR=..  P2P device address to announce (the Wi-Fi Direct interface of install-p2p.sh)
+#   ONLY_P2P=1   leave out the receiver address (MS-MICE): Windows connects over Wi-Fi Direct at
+#                once instead of trying the network first (needs P2P_ADDR)
 
 set -e
 
@@ -48,6 +50,8 @@ esac
 echo "$IP" | grep -Eq '^([0-9]{1,3}\.){3}[0-9]{1,3}$' || die "receiver-ip is not an IPv4 address"
 case "$CHANNEL" in 1|6|11) ;; *) die "channel must be 1, 6 or 11" ;; esac
 echo "$MICE_CAP" | grep -Eq '^[0-9a-fA-F]{2}$' || die "MICE_CAP must be two hex digits"
+ONLY_P2P="${ONLY_P2P:-0}"
+[ "$ONLY_P2P" = "0" ] || [ -n "$P2P_ADDR" ] || die "ONLY_P2P=1 needs P2P_ADDR (Wi-Fi Direct from install-p2p.sh)"
 
 SSID="${SSID:-DIRECT-MC-$NAME}"
 [ "${#SSID}" -le 32 ] || die "SSID is longer than 32 characters"
@@ -112,7 +116,9 @@ IE_WFD="$(element 506f9a0a "0000060011${WFD_PORT_HEX:-1c44}00c8")"
 #   1049 Vendor Extension, OUI 00 01 37 (Microsoft):
 #        2001 Capability, 2002 Host Name (ASCII), 2005 IP Address (ASCII dotted decimal)
 MICE="000137$(wsc_attr 2001 "$MICE_CAP")$(wsc_attr 2002 "$NAME_HEX")$(wsc_attr 2005 "$IP_HEX")"
-WSC="$(wsc_attr 104a 10)$(wsc_attr 1044 02)$(wsc_attr 1054 "$DEV_TYPE")$(wsc_attr 1011 "$NAME_HEX")$(wsc_attr 1049 "$MICE")"
+WSC="$(wsc_attr 104a 10)$(wsc_attr 1044 02)$(wsc_attr 1054 "$DEV_TYPE")$(wsc_attr 1011 "$NAME_HEX")"
+# without the Microsoft extension Windows sees a plain Miracast sink and uses Wi-Fi Direct
+[ "$ONLY_P2P" = "0" ] && WSC="$WSC$(wsc_attr 1049 "$MICE")"
 IE_WSC="$(element 0050f204 "$WSC")"
 
 VENDOR_ELEMENTS="$IE_P2P$IE_WFD$IE_WSC"
@@ -125,6 +131,7 @@ echo "Receiver IP : $IP"
 echo "SSID        : $SSID"
 echo "Channel     : $CHANNEL"
 echo "Radio MAC   : $MAC"
+echo "Only P2P    : $ONLY_P2P"
 echo "P2P element : $IE_P2P"
 echo "WFD element : $IE_WFD"
 echo "WSC element : $IE_WSC"
@@ -161,7 +168,7 @@ uci commit wireless
 wifi reload
 
 # remembered for beacon-status.sh
-printf 'NAME="%s"\nIP="%s"\nP2P_ADDR="%s"\n' "$NAME" "$IP" "$P2P_ADDR" > /etc/mice-beacon.conf
+printf 'NAME="%s"\nIP="%s"\nP2P_ADDR="%s"\nONLY_P2P="%s"\n' "$NAME" "$IP" "$P2P_ADDR" "$ONLY_P2P" > /etc/mice-beacon.conf
 
 echo "Applied. Waiting for the radio ..."
 sleep 10

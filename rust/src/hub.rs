@@ -4,6 +4,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
+use crate::audio::AudioSink;
+
 pub fn log(text: impl AsRef<str>) {
     println!("{}", text.as_ref());
 }
@@ -32,20 +34,27 @@ pub struct Hub {
     frame: Mutex<(u64, Option<Arc<Vec<u8>>>)>,
     cond: Condvar,
     session: Mutex<Option<SessionInfo>>,
+    /// set to end the running session (Win+K or screen sharing from the panel)
+    session_stop: Mutex<Option<Arc<AtomicBool>>>,
     output: Mutex<String>,
-    /// Set by the projector output when it needs a key frame; the RTSP loop asks the source.
+    /// Set by the projector output when it needs a key frame; the running source (RTSP loop
+    /// or the browser) is asked for one.
     pub idr_wanted: AtomicBool,
+    /// sound of the running session
+    pub audio: AudioSink,
 }
 
 impl Hub {
-    pub fn new() -> Arc<Hub> {
+    pub fn new(audio_target: &str) -> Arc<Hub> {
         Arc::new(Hub {
             guests: Mutex::new(Vec::new()),
             frame: Mutex::new((0, None)),
             cond: Condvar::new(),
             session: Mutex::new(None),
+            session_stop: Mutex::new(None),
             output: Mutex::new(String::new()),
             idr_wanted: AtomicBool::new(false),
+            audio: AudioSink::new(audio_target),
         })
     }
 
@@ -79,19 +88,34 @@ impl Hub {
         self.session.lock().unwrap().clone()
     }
 
-    /// Claims the receiver for a new session; false if one is already running.
-    pub fn begin_session(&self, info: SessionInfo) -> Result<(), String> {
+    /// Claims the receiver for a new session; Err(name of the current source) if one is running.
+    /// `stop` is set when somebody ends the session from the panel.
+    pub fn begin_session(&self, info: SessionInfo, stop: Arc<AtomicBool>) -> Result<(), String> {
         let mut g = self.session.lock().unwrap();
         if let Some(s) = g.as_ref() {
             return Err(s.source.clone());
         }
         *g = Some(info);
+        *self.session_stop.lock().unwrap() = Some(stop);
+        self.idr_wanted.store(false, Ordering::Relaxed);
         Ok(())
     }
 
     pub fn end_session(&self) {
         *self.session.lock().unwrap() = None;
+        *self.session_stop.lock().unwrap() = None;
         self.clear_frame();
+    }
+
+    /// Asks the running session to end; false if none runs.
+    pub fn stop_session(&self) -> bool {
+        match self.session_stop.lock().unwrap().as_ref() {
+            Some(stop) => {
+                stop.store(true, Ordering::Relaxed);
+                true
+            }
+            None => false,
+        }
     }
 
     pub fn update_session(&self, f: impl FnOnce(&mut SessionInfo)) {

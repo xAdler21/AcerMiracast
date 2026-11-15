@@ -11,6 +11,7 @@
     --down: #ff6161; --unknown: #6f7787;
   }
   * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
   body { margin: 0; background: var(--bg); color: var(--text);
          font-family: system-ui, "Segoe UI", sans-serif; font-size: 16px; }
   main { max-width: 1100px; margin: 0 auto; padding: 16px; display: grid; gap: 16px;
@@ -62,16 +63,66 @@
        background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 8px; width: 100%; }
   .form .result { color: var(--muted); margin: 0; white-space: pre-wrap; }
   .danger { border-color: var(--down); }
+  .modes { display: grid; gap: 10px; margin-top: 12px; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
+  .mode { border: 1px solid var(--border); border-radius: 10px; padding: 12px; display: flex;
+          flex-direction: column; gap: 8px; }
+  .mode.current { border-color: var(--accent); }
+  .mode button { margin-top: auto; align-self: flex-start; min-width: 0; padding: 8px 12px; }
+  .mode p { margin: 0; color: var(--muted); font-size: .92rem; line-height: 1.4; }
+  #r-body img { max-width: 640px; }
+  .meter { display: grid; gap: 4px; min-width: 160px; max-width: 320px; }
+  .meter div { height: 8px; border-radius: 4px; background: var(--border); overflow: hidden; }
+  .meter span { display: block; height: 100%; background: var(--up); transition: width .15s linear; }
+  .share-row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 12px; }
+  .share-row select { font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--border);
+       border-radius: 8px; padding: 8px; max-width: 100%; }
+  .small { font-size: .88rem; }
+  body[data-page="open"] .admin-only { display: none !important; }
+  body[data-page="admin"] .admin-gap { margin-top: 16px; }
 </style>
 </head>
-<body>
+<body data-page="open">
 <main>
   <section class="wide">
     <h2><span class="dot" id="p-dot"></span>Beamer<span class="state" id="p-state">…</span></h2>
     <div id="p-body"></div>
     <p id="message" role="status"></p>
   </section>
-  <section class="wide" id="s-sec" hidden>
+  <section class="wide" id="share-sec">
+    <h2><span class="dot" id="share-dot"></span>Bildschirm teilen<span class="state" id="share-state"></span></h2>
+    <p class="note">Zeigt den Bildschirm dieses PCs auf dem Beamer, ohne Win+K. Den Bildschirm oder das
+      Fenster wählst du im Fenster des Browsers.</p>
+    <div class="share-row">
+      <label class="note" for="share-audio">Ton</label>
+      <select id="share-audio"></select>
+      <button id="share-names" hidden>Gerätenamen anzeigen</button>
+    </div>
+    <p class="note small">„Ton des geteilten Bildschirms“ gibt es, wenn du einen ganzen Bildschirm teilst
+      und im Auswahlfenster „Systemaudio teilen“ anhakst. Ein bestimmtes Windows-Ausgabegerät kann der
+      Browser nicht abgreifen: dafür ein virtuelles Audiokabel als Ausgabe einstellen und es hier als
+      Eingang wählen.</p>
+    <div class="buttons">
+      <button id="share-start">Bildschirm teilen</button>
+      <button id="share-stop" hidden>Teilen beenden</button>
+    </div>
+    <p class="warn" id="share-msg" role="status"></p>
+  </section>
+  <section class="wide">
+    <h2><span class="dot" id="r-dot"></span>Übertragung<span class="state" id="r-state">…</span></h2>
+    <div id="r-body"></div>
+    <div class="share-row" id="r-audio" hidden>
+      <span class="note">Ton <span id="r-audio-src"></span></span>
+      <div class="meter" role="img" id="r-meter" aria-label="Pegel">
+        <div><span id="r-left" style="width:0"></span></div>
+        <div><span id="r-right" style="width:0"></span></div>
+      </div>
+    </div>
+    <div class="buttons" id="r-actions" hidden>
+      <button id="r-stop" class="danger">Übertragung beenden</button>
+    </div>
+    <p class="warn" id="r-msg" role="status"></p>
+  </section>
+  <section class="wide admin-only" id="s-sec" hidden>
     <h2>Einstellungen am Beamer</h2>
     <div class="groups" id="s-body"></div>
   </section>
@@ -80,13 +131,15 @@
     <div id="c-guests"></div>
     <div class="groups">
       <div>
-        <h3>Fernbedienung (EZCast-Menü)</h3>
-        <div class="pad">
-          <span></span><button data-key="10" aria-label="Hoch">▲</button><span></span>
-          <button data-key="12" aria-label="Links">◀</button><button data-key="14">OK</button><button data-key="13" aria-label="Rechts">▶</button>
-          <button data-key="15">Zurück</button><button data-key="11" aria-label="Runter">▼</button><span></span>
+        <div class="admin-only">
+          <h3>Fernbedienung (EZCast-Menü)</h3>
+          <div class="pad">
+            <span></span><button data-key="10" aria-label="Hoch">▲</button><span></span>
+            <button data-key="12" aria-label="Links">◀</button><button data-key="14">OK</button><button data-key="13" aria-label="Rechts">▶</button>
+            <button data-key="15">Zurück</button><button data-key="11" aria-label="Runter">▼</button><span></span>
+          </div>
         </div>
-        <h3 style="margin-top:16px">Ton der Übertragung</h3>
+        <h3 class="admin-gap">Lautstärke der Übertragung</h3>
         <div class="buttons" style="margin-top:0">
           <button id="vol-down">Leiser</button><button id="vol-up">Lauter</button>
         </div>
@@ -99,25 +152,44 @@
     </div>
     <p class="warn" id="c-msg" role="status"></p>
   </section>
-  <section class="wide" id="a-sec" hidden>
+  <section class="wide admin-only" id="a-sec" hidden>
     <h2>Verwaltung des Beamers</h2>
     <div id="a-info"></div>
     <div id="a-body"></div>
   </section>
-  <section>
-    <h2><span class="dot" id="r-dot"></span>Drahtlos-Übertragung<span class="state" id="r-state">…</span></h2>
-    <div id="r-body"></div>
+  <section class="wide admin-only" id="t-sec">
+    <h2>Ton</h2>
+    <p class="note">Der Ton von Win+K und vom Bildschirm-Teilen kommt hier an. Die Pegelanzeige steht bei
+      „Übertragung“.</p>
+    <div class="share-row">
+      <label class="note" for="t-target">Ziel</label>
+      <select id="t-target"></select>
+    </div>
+    <p class="note small">Weitere Ziele (Netzwerk, Anlage, Beamer) kommen später dazu.</p>
+    <p class="warn" id="t-msg" role="status"></p>
   </section>
-  <section>
+  <section class="wide admin-only" id="b-sec">
     <h2><span class="dot" id="b-dot"></span>Funk-Sender<span class="state" id="b-state">…</span></h2>
     <div id="b-body"></div>
+  </section>
+  <section class="wide admin-only" id="b-p2p" hidden>
+    <h2>Wi-Fi Direct (Win+K ohne Netzwerk)</h2>
+    <p class="note">Bestimmt, wie ein Laptop nach Win+K zu diesem Server findet. Umschalten dauert etwa
+      20 Sekunden; so lange ist der Raum nicht in Win+K zu sehen. Während einer Übertragung ist
+      Umschalten gesperrt.</p>
+    <div class="modes" id="b-modes"></div>
+    <p class="warn" id="b-msg" role="status"></p>
   </section>
 </main>
 <script>
 const POWER = { on: ["An", "up"], off: ["Aus", "unknown"], warming: ["Startet …", "degraded"],
                 cooling: ["Kühlt ab …", "degraded"], unknown: ["Unbekannt", "unknown"] };
 const $ = id => document.getElementById(id);
+// "/" is the open panel, "/admin" the whole one (the Plintus app puts its PIN in front of it)
+const ADMIN = document.body.dataset.page === "admin";
+if (ADMIN) document.title = "Beamer – Verwaltung";
 let streamShown = false;
+let lastStatus = null;
 
 function el(tag, props, children) {
   const node = Object.assign(document.createElement(tag), props || {});
@@ -185,6 +257,10 @@ function showProjector(p) {
   ];
   if (p.mute !== undefined)                    // only projectors with a working picture mute
     main.push(button(p.mute ? "Bild wieder an" : "Bild aus", !!p.mute, !on, () => send("mute", p.mute ? "off" : "on")));
+  if (!ADMIN && p.settings) {                  // on /admin these are under "Einstellungen am Beamer"
+    main.push(button("Bild ausblenden", on && p.settings.hid === "1", !on, () => send("press", "hid")));
+    main.push(button("Freeze", on && p.settings.frz === "1", !on, () => send("press", "frz")));
+  }
   body.append(el("div", { className: "buttons" }, main));
   if (p.inputs.length) {
     body.append(el("p", { className: "label", textContent: "Eingang" }));
@@ -206,7 +282,7 @@ const CHOICES = {
   prj: ["Projektion", [["0", "Von vorn, Tisch"], ["2", "Von hinten, Tisch"]]],
   lgo: ["Startbild", [["0", "Acer"], ["1", "Eigenes"]]],
 };
-const TOGGLES = { hid: "Bild ausblenden", frz: "Standbild", eco: "Eco-Modus" };
+const TOGGLES = { hid: "Bild ausblenden", frz: "Freeze", eco: "Eco-Modus" };
 const GROUPS = [
   ["Schnell", ["hid", "frz", "eco", "syc", "rst"]],
   ["Bild", ["mod", "bri", "con", "gam", "ctp"]],
@@ -319,8 +395,8 @@ function showConference(data) {
       rows([["Gerät", c.name || c.ip], ["Adresse", c.ip], ["Rolle", host ? "Moderator" : "Gast"],
             ["Platz", where ? where[1] : "nicht im Bild"]]),
       el("div", { className: "buttons" }, [
-        ...POSITIONS.map(([v, l]) => button(l, where && where[0] === v, false, () => api("conf", v, { ip: c.ip }))),
-        ...(host ? [] : [button("Zum Moderator", false, false, () => api("conf", "host", { ip: c.ip }, "„" + (c.name || c.ip) + "“ zum Moderator machen?"))]),
+        ...(ADMIN ? POSITIONS.map(([v, l]) => button(l, where && where[0] === v, false, () => api("conf", v, { ip: c.ip }))) : []),
+        ...(host || !ADMIN ? [] : [button("Zum Moderator", false, false, () => api("conf", "host", { ip: c.ip }, "„" + (c.name || c.ip) + "“ zum Moderator machen?"))]),
         button("Trennen", false, false, () => api("conf", "kick", { ip: c.ip }, "„" + (c.name || c.ip) + "“ vom Beamer trennen?")),
       ]),
     ]);
@@ -457,11 +533,13 @@ function showAdmin(data) {
 function showReceiver(r) {
   const body = $("r-body");
   const s = r.session;
+  $("r-actions").hidden = !s;
   if (!s) {
     head("r", "up", "bereit");
     streamShown = false;
     body.replaceChildren(el("p", { className: "note",
-      textContent: "Niemand überträgt. Am Laptop Win+K drücken und „" + (r.name || "den Raum") + "“ wählen." }));
+      textContent: "Niemand überträgt. Am Laptop Win+K drücken und „" + (r.name || "den Raum") +
+                   "“ wählen, oder oben „Bildschirm teilen“." }));
     return;
   }
   head("r", s.playing ? "up" : "degraded", s.playing ? "läuft" : "verbindet …");
@@ -478,6 +556,307 @@ function showReceiver(r) {
   }
 }
 
+$("r-stop").onclick = () => {
+  const s = lastStatus && lastStatus.receiver.session;
+  api("session_stop", "", null, "Die Übertragung von „" + (s ? s.source : "") + "“ beenden?", $("r-msg"));
+};
+
+// ---- sound level ------------------------------------------------------------------------------
+let meterTimer = null;
+function showMeter(a) {
+  const box = $("r-audio");
+  box.hidden = !a || !a.active;
+  if (box.hidden) {
+    clearInterval(meterTimer);
+    meterTimer = null;
+    return;
+  }
+  $("r-audio-src").textContent = "(" + a.source + ", " + (a.rate / 1000) + " kHz)";
+  const width = db => Math.max(0, Math.min(100, (db + 60) / 60 * 100)) + "%";
+  $("r-left").style.width = width(a.peak_db[0]);
+  $("r-right").style.width = width(a.peak_db[1]);
+  $("r-meter").ariaLabel = "Pegel " + a.peak_db[0] + " / " + a.peak_db[1] + " dB";
+  if (!meterTimer) meterTimer = setInterval(async () => {   // faster than the page refresh
+    try { showMeter(await (await fetch("/api/audio", { cache: "no-store" })).json()); } catch (e) {}
+  }, 250);
+}
+function showAudioTarget(a) {
+  if (!ADMIN || !a) return;
+  const sel = $("t-target");
+  if (document.activeElement === sel) return;
+  sel.replaceChildren(...a.targets.map(t => el("option", { value: t.name, textContent: t.label, selected: t.name === a.target })));
+  sel.disabled = a.targets.length < 2;
+}
+$("t-target").onchange = () => api("audio_target", $("t-target").value, null, null, $("t-msg"));
+
+// ---- screen sharing from this browser (share.rs) ----------------------------------------------
+// getDisplayMedia -> 1280x720 canvas -> WebCodecs H.264 Constrained Baseline (what the projector
+// plays) -> WebSocket /api/share -> the VM passes it to the projector unchanged.
+const SHARE_AUDIO_KEY = "acermiracast.share.audio";
+const share = { running: false };
+function shareMsg(text) { $("share-msg").textContent = text || ""; }
+function shareState() {
+  const busy = lastStatus && lastStatus.receiver.session;
+  $("share-start").hidden = share.running;
+  $("share-stop").hidden = !share.running;
+  $("share-audio").disabled = share.running;
+  $("share-dot").className = "dot " + (share.running ? "up" : busy ? "degraded" : "");
+  $("share-state").textContent = share.running ? "läuft" : busy ? "belegt von „" + busy.source + "“" : "";
+}
+function shareProblem() {
+  if (!window.isSecureContext)
+    return "Bildschirm teilen braucht eine als sicher geltende Seite. In der Plintus-App ist das eingerichtet. " +
+           "In Chrome oder Edge: unter chrome://flags bzw. edge://flags „Insecure origins treated as secure“ " +
+           "einschalten, " + location.origin + " eintragen und den Browser neu starten.";
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia)
+    return "Dieser Browser kann keinen Bildschirm aufnehmen.";
+  if (!window.VideoEncoder || !window.MediaStreamTrackProcessor || !window.VideoFrame)
+    return "Dieser Browser kann das Bild nicht selbst codieren. Bitte Chrome oder Edge nehmen.";
+  return "";
+}
+async function fillAudioChoices() {
+  const sel = $("share-audio");
+  let saved = "none";
+  try { saved = localStorage.getItem(SHARE_AUDIO_KEY) || "none"; } catch (e) {}
+  const opts = [["none", "Kein Ton"], ["system", "Ton des geteilten Bildschirms"]];
+  let unnamed = false;
+  try {
+    const devices = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === "audioinput");
+    devices.forEach((d, i) => {
+      if (!d.label) unnamed = true;
+      opts.push(["input:" + d.deviceId, "Eingang: " + (d.label || "Gerät " + (i + 1))]);
+    });
+  } catch (e) {}
+  sel.replaceChildren(...opts.map(([v, l]) => el("option", { value: v, textContent: l, selected: v === saved })));
+  $("share-names").hidden = !unnamed;
+}
+$("share-audio").onchange = () => { try { localStorage.setItem(SHARE_AUDIO_KEY, $("share-audio").value); } catch (e) {} };
+$("share-names").onclick = async () => {
+  try {
+    const s = await navigator.mediaDevices.getUserMedia({ audio: true });
+    s.getTracks().forEach(t => t.stop());
+  } catch (e) { shareMsg("Ohne Freigabe zeigt der Browser keine Gerätenamen."); }
+  fillAudioChoices();
+};
+
+async function encoderConfig() {
+  const config = { codec: "avc1.42E01F", width: 1280, height: 720, bitrate: 3500000, framerate: 30,
+                   latencyMode: "realtime", avc: { format: "annexb" } };
+  for (const hw of ["prefer-hardware", "no-preference"]) {
+    const c = Object.assign({}, config, { hardwareAcceleration: hw });
+    try { if ((await VideoEncoder.isConfigSupported(c)).supported) return c; } catch (e) {}
+  }
+  return null;
+}
+
+function shareName() {
+  const fromUrl = new URLSearchParams(location.search).get("name");
+  return (fromUrl || "Browser").slice(0, 40);
+}
+
+async function startShare() {
+  shareMsg("");
+  const problem = shareProblem();
+  if (problem) return shareMsg(problem);
+  const config = await encoderConfig();
+  if (!config) return shareMsg("Dieser Browser kann kein H.264 (Constrained Baseline, 1280×720) codieren.");
+  const busy = lastStatus && lastStatus.receiver.session;
+  if (busy && !confirm("Gerade zeigt „" + busy.source + "“. Übernehmen? Die Übertragung von „" +
+                       busy.source + "“ wird dabei beendet.")) return;
+  const audioChoice = $("share-audio").value;
+  let display;
+  try {
+    display = await navigator.mediaDevices.getDisplayMedia({
+      video: { frameRate: { ideal: 30, max: 30 } }, audio: audioChoice === "system",
+      systemAudio: "include", selfBrowserSurface: "exclude", surfaceSwitching: "include" });
+  } catch (e) {
+    return shareMsg(e.name === "NotAllowedError" ? "Teilen abgebrochen." : "Bildschirm konnte nicht aufgenommen werden: " + e.message);
+  }
+  const tracks = display.getTracks();
+  let audioTrack = null;
+  if (audioChoice === "system") {
+    audioTrack = display.getAudioTracks()[0] || null;
+    if (!audioTrack) shareMsg("Kein Systemton: im Auswahlfenster einen ganzen Bildschirm wählen und „Systemaudio teilen“ anhaken. Es geht ohne Ton weiter.");
+  } else if (audioChoice.startsWith("input:")) {
+    try {
+      const mic = await navigator.mediaDevices.getUserMedia({ audio: { deviceId: { exact: audioChoice.slice(6) },
+        echoCancellation: false, noiseSuppression: false, autoGainControl: false, channelCount: 2 } });
+      audioTrack = mic.getAudioTracks()[0];
+      tracks.push(audioTrack);
+    } catch (e) { shareMsg("Der Ton-Eingang ist nicht verfügbar (" + e.message + "). Es geht ohne Ton weiter."); }
+  }
+
+  const ws = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/api/share");
+  ws.binaryType = "arraybuffer";
+  Object.assign(share, { running: true, ws, tracks, encoder: null, needKey: true, lastTs: 0, lastKey: 0, started: false });
+  shareState();
+  const videoTrack = display.getVideoTracks()[0];
+  videoTrack.onended = () => stopShare("");               // "Freigabe beenden" in the browser
+
+  ws.onopen = () => ws.send(JSON.stringify({ type: "hello", name: shareName(), takeover: !!busy }));
+  ws.onclose = () => { if (share.running) stopShare(share.started ? "Die Verbindung zum Server ist weg." : "Der Server hat abgelehnt."); };
+  ws.onmessage = e => {
+    if (typeof e.data !== "string") return;
+    const m = JSON.parse(e.data);
+    if (m.type === "started") {
+      share.started = true;
+      runVideo(videoTrack, config);
+      if (audioTrack) runAudio(audioTrack);
+    } else if (m.type === "busy") {
+      stopShare("Gerade zeigt „" + m.by + "“.");
+    } else if (m.type === "key") {
+      share.needKey = true;
+      encodeCanvas();                                      // a still screen sends no new frames
+    } else if (m.type === "ended") {
+      stopShare(m.reason === "Teilen beendet" ? "" : m.reason);
+    }
+  };
+}
+
+function encodeCanvas() {
+  const s = share;
+  if (!s.running || !s.encoder || s.encoder.state !== "configured") return;
+  // too much waiting: drop this picture, start again with a key frame
+  if (s.encoder.encodeQueueSize > 2 || s.ws.bufferedAmount > 2000000) { s.needKey = true; return; }
+  const ts = Math.max(s.lastTs + 1000, s.frameTs || 0);
+  s.lastTs = ts;
+  const key = s.needKey || ts - s.lastKey > 2000000;
+  if (key) { s.lastKey = ts; s.needKey = false; }
+  const frame = new VideoFrame(s.canvas, { timestamp: ts });
+  s.encoder.encode(frame, { keyFrame: key });
+  frame.close();
+  s.lastEncode = performance.now();
+}
+
+async function runVideo(track, config) {
+  const s = share;
+  s.canvas = new OffscreenCanvas(1280, 720);
+  const g = s.canvas.getContext("2d");
+  g.fillStyle = "#000";
+  g.fillRect(0, 0, 1280, 720);
+  s.encoder = new VideoEncoder({
+    output: chunk => {
+      if (s.ws.readyState !== WebSocket.OPEN) return;
+      const buf = new ArrayBuffer(10 + chunk.byteLength);
+      const v = new DataView(buf);
+      v.setUint8(0, 1);
+      v.setUint8(1, chunk.type === "key" ? 1 : 0);
+      v.setBigUint64(2, BigInt(Math.max(0, Math.round(chunk.timestamp))));
+      chunk.copyTo(new Uint8Array(buf, 10));
+      s.ws.send(buf);
+    },
+    error: e => stopShare("Fehler beim Codieren: " + e.message),
+  });
+  s.encoder.configure(config);
+  // a still screen delivers no frames: repeat the picture now and then so nothing stalls
+  s.repeat = setInterval(() => { if (performance.now() - (s.lastEncode || 0) > 1000) encodeCanvas(); }, 1000);
+  const reader = new MediaStreamTrackProcessor({ track }).readable.getReader();
+  s.videoReader = reader;
+  while (s.running) {
+    let r;
+    try { r = await reader.read(); } catch (e) { break; }
+    if (r.done) break;
+    const f = r.value;
+    const k = Math.min(1280 / f.displayWidth, 720 / f.displayHeight);
+    const w = Math.round(f.displayWidth * k), h = Math.round(f.displayHeight * k);
+    g.fillRect(0, 0, 1280, 720);
+    g.drawImage(f, (1280 - w) / 2, (720 - h) / 2, w, h);
+    s.frameTs = f.timestamp;
+    f.close();
+    if (performance.now() - (s.lastEncode || 0) >= 30) encodeCanvas();   // at most ~30 per second
+  }
+}
+
+async function runAudio(track) {
+  const s = share;
+  const reader = new MediaStreamTrackProcessor({ track }).readable.getReader();
+  s.audioReader = reader;
+  while (s.running) {
+    let r;
+    try { r = await reader.read(); } catch (e) { break; }
+    if (r.done) break;
+    const a = r.value;
+    const n = a.numberOfFrames;
+    const left = new Float32Array(n), right = new Float32Array(n);
+    try {
+      a.copyTo(left, { planeIndex: 0, format: "f32-planar" });
+      if (a.numberOfChannels > 1) a.copyTo(right, { planeIndex: 1, format: "f32-planar" }); else right.set(left);
+    } catch (e) { a.close(); continue; }
+    const buf = new ArrayBuffer(14 + n * 4);
+    const v = new DataView(buf);
+    v.setUint8(0, 2);
+    v.setUint8(1, 2);
+    v.setBigUint64(2, BigInt(Math.max(0, Math.round(a.timestamp))));
+    v.setUint32(10, a.sampleRate);
+    const pcm = x => Math.max(-32768, Math.min(32767, Math.round(x * 32767)));
+    for (let i = 0; i < n; i++) {
+      v.setInt16(14 + i * 4, pcm(left[i]), true);
+      v.setInt16(16 + i * 4, pcm(right[i]), true);
+    }
+    a.close();
+    if (s.ws.readyState === WebSocket.OPEN && s.ws.bufferedAmount < 4000000) s.ws.send(buf);
+  }
+}
+
+function stopShare(message) {
+  const s = share;
+  if (!s.running) return;
+  s.running = false;
+  clearInterval(s.repeat);
+  (s.tracks || []).forEach(t => t.stop());
+  [s.videoReader, s.audioReader].forEach(r => { if (r) r.cancel().catch(() => {}); });
+  if (s.encoder && s.encoder.state !== "closed") s.encoder.close();
+  if (s.ws && s.ws.readyState <= WebSocket.OPEN) s.ws.close();
+  shareMsg(message);
+  shareState();
+  setTimeout(refresh, 500);
+}
+$("share-start").onclick = startShare;
+$("share-stop").onclick = () => stopShare("");
+if (navigator.mediaDevices && navigator.mediaDevices.enumerateDevices) fillAudioChoices();
+else $("share-audio").replaceChildren(el("option", { value: "none", textContent: "Kein Ton" }));
+{ const p = shareProblem(); if (p) shareMsg(p); }
+
+// Wi-Fi Direct modes of the box: [value, title, what it does]
+const P2P_MODES = [
+  ["only", "Nur Wi-Fi Direct (empfohlen bei getrennten WLANs)",
+   "Der Funk-Sender nennt Windows nur sich selbst als Wi-Fi-Direct-Gerät, nicht die Adresse dieses " +
+   "Servers. Jeder Laptop verbindet sich sofort per Funk direkt mit dem Funk-Sender – egal ob er in " +
+   "keinem, im Gast- oder im Familien-WLAN ist. Das WLAN des Laptops muss eingeschaltet sein. Ist der " +
+   "Laptop gleichzeitig in einem 5-GHz-WLAN, wechselt er beim Zeigen zwischen den Kanälen; sein " +
+   "Internet ist dann etwas langsamer."],
+  ["fallback", "Erst Netzwerk, dann Wi-Fi Direct",
+   "Der Funk-Sender nennt die Adresse dieses Servers und zusätzlich sich selbst als Wi-Fi-Direct-Gerät. " +
+   "Windows versucht zuerst den Weg über das Netzwerk. Erreicht der Laptop den Server über sein " +
+   "Netzwerk (z. B. per Kabel im selben Netz), geht das am schnellsten. In WLANs, die den Server nicht erreichen, wartet Windows " +
+   "aber erst ab, bis der Versuch scheitert – das Bild kommt dort spürbar später."],
+  ["off", "Aus – nur über das Netzwerk",
+   "Wi-Fi Direct ist abgeschaltet, der Funk-Sender nennt nur die Adresse dieses Servers. Es klappt " +
+   "nur bei Laptops, deren Netzwerk den Server erreicht. Laptops ohne WLAN-Verbindung oder in " +
+   "abgeschotteten WLANs sehen den Raum in Win+K, können sich aber nicht verbinden."],
+];
+
+function showP2P(b, r) {
+  const box = $("b-p2p");
+  box.hidden = !b.reachable || !b.p2p || b.p2p === "none";
+  if (box.hidden) return;
+  const busy = !!b.p2p_busy, running = !!(r && r.session);
+  $("b-modes").replaceChildren(...P2P_MODES.map(([value, title, text]) => {
+    const current = b.p2p === value;
+    const label = current ? (busy ? "Wird eingestellt …" : "Eingestellt") : "Einstellen";
+    return el("div", { className: "mode" + (current ? " current" : "") }, [
+      el("strong", { textContent: title }),
+      el("p", { textContent: text }),
+      button(label, current, current || busy || running, () =>
+        api("p2p_mode", value, null, "Wi-Fi Direct auf „" + title + "“ umstellen? Der Raum ist dabei " +
+            "etwa 20 Sekunden nicht in Win+K zu sehen.", $("b-msg"))),
+    ]);
+  }));
+  if (r && r.wifi_direct === false && b.p2p !== "off")
+    $("b-msg").textContent = "Am Server ist „wifi_direct“ in /etc/acermiracast/config.json aus: " +
+      "Verbindungen über Wi-Fi Direct kommen dort nicht an.";
+}
+
 function showBeacon(b) {
   const body = $("b-body");
   if (!b.configured) {
@@ -492,19 +871,26 @@ function showBeacon(b) {
   }
   const ok = b.up && !b.stale;
   head("b", ok ? "up" : "down", b.stale ? "meldet sich nicht mehr" : b.up ? "sendet" : "sendet nicht");
-  body.replaceChildren(rows([["Name in Win+K", b.name], ["Ziel", b.receiver], ["Kanal", b.channel],
+  const target = b.p2p === "only" ? "nur Wi-Fi Direct über diesen Funk-Sender"
+               : b.p2p === "fallback" ? b.receiver + ", sonst Wi-Fi Direct" : b.receiver;
+  body.replaceChildren(rows([["Name in Win+K", b.name], ["Ziel", target], ["Kanal", b.channel],
     ["Adresse", b.host], ["Läuft seit", b.uptime ? duration(b.uptime) : ""]]));
 }
 
 async function refresh() {
   try {
     const data = await (await fetch("/api/status", { cache: "no-store" })).json();
+    lastStatus = data;
+    shareState();
+    showMeter(data.audio);
+    showAudioTarget(data.audio);
     showProjector(data.projector);
     showSettings(data.projector);
     showConference(data);
     showAdmin(data);
     showReceiver(data.receiver);
     showBeacon(data.beacon);
+    showP2P(data.beacon, data.receiver);
   } catch (e) {
     ["p", "r", "b"].forEach(x => head(x, "down", "Server antwortet nicht"));
   }

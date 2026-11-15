@@ -150,7 +150,16 @@ impl Session {
     pub fn run(&self, o: &Options, hub: Arc<Hub>, output: Option<Output>) {
         let pipeline: Arc<Mutex<Option<Pipeline>>> = Arc::new(Mutex::new(None));
         let rtp_stop = Arc::new(AtomicBool::new(false));
-        let rtp = match UdpSocket::bind(("0.0.0.0", o.rtp_port)) {
+        // the previous session may still be letting go of the port
+        let mut bound = UdpSocket::bind(("0.0.0.0", o.rtp_port));
+        for _ in 0..30 {
+            if bound.is_ok() {
+                break;
+            }
+            thread::sleep(Duration::from_millis(100));
+            bound = UdpSocket::bind(("0.0.0.0", o.rtp_port));
+        }
+        let rtp = match bound {
             Ok(s) => s,
             Err(e) => {
                 log(format!("RTP port {} not available: {e}", o.rtp_port));
@@ -160,9 +169,15 @@ impl Session {
         if let (Some(target), Ok(sock)) = (self.punch, rtp.try_clone()) {
             let stop = rtp_stop.clone();
             thread::spawn(move || {
+                // short sleeps: the clone keeps the RTP port bound, and a source that reconnects
+                // right after a session needs it again at once
+                let mut tick = 0u32;
                 while !stop.load(Ordering::Relaxed) {
-                    let _ = sock.send_to(b"keep-open", target);
-                    thread::sleep(Duration::from_secs(5));
+                    if tick % 50 == 0 {
+                        let _ = sock.send_to(b"keep-open", target);
+                    }
+                    tick = tick.wrapping_add(1);
+                    thread::sleep(Duration::from_millis(100));
                 }
             });
         }

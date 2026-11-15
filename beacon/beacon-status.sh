@@ -25,7 +25,11 @@ UP=false
 if [ -n "$SSID" ] && iw dev 2>/dev/null | grep -q "ssid $SSID\$"; then UP=true; fi
 CHANNEL="$(iw dev 2>/dev/null | awk '/channel/ {print $2; exit}')"
 UPTIME="$(cut -d. -f1 /proc/uptime)"
+# Wi-Fi Direct (install-p2p.sh): off | fallback | only, "none" if not installed
+P2P=none
+[ -x /usr/sbin/acer-p2p-mode ] && P2P="$(/usr/sbin/acer-p2p-mode)"
+P2P_BUSY=false; [ -f /tmp/acer-p2p-mode.busy ] && P2P_BUSY=true
 
-printf '{"name":"%s","receiver":"%s","ssid":"%s","channel":"%s","up":%s,"uptime":%s}\n' \
-	"$NAME" "$IP" "$SSID" "$CHANNEL" "$UP" "${UPTIME:-0}" > /tmp/beacon.json.tmp
-mv /tmp/beacon.json.tmp /tmp/beacon.json
+printf '{"name":"%s","receiver":"%s","ssid":"%s","channel":"%s","up":%s,"uptime":%s,"p2p":"%s","p2p_busy":%s}\n' \
+	"$NAME" "$IP" "$SSID" "$CHANNEL" "$UP" "${UPTIME:-0}" "$P2P" "$P2P_BUSY" > /tmp/beacon.json.$$
+mv /tmp/beacon.json.$$ /tmp/beacon.json

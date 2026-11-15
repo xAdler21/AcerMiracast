@@ -10,7 +10,16 @@
 # as an answer: the receiver opens the UDP path itself (it sends to box:50000).
 #
 # Usage:   RECEIVER=10.21.0.232 sh install-p2p.sh
-#          REMOVE=1 sh install-p2p.sh          (packages stay installed)
+#          MODE=only RECEIVER=10.21.0.232 sh install-p2p.sh    (mode to start with, see below;
+#                                                without MODE the last mode is kept)
+#          REMOVE=1 sh install-p2p.sh          (packages stay installed, beacon back to network only)
+#
+# Modes (switched later with `acer-p2p-mode <mode>` or from the receiver's web panel through
+# POST http://<box>/cgi-bin/p2p-mode, which only the receiver may call):
+#   off       Wi-Fi Direct off, the beacon names only the receiver (network path)
+#   fallback  the beacon names the receiver and the Wi-Fi Direct device: Windows tries the
+#             network first and uses Wi-Fi Direct after that timed out
+#   only      the beacon names only the Wi-Fi Direct device: Windows uses it at once
 # Needs:   wpa-supplicant-p2p, wpa-cli and hostapd-basic-mbedtls instead of wpad-basic-mbedtls
 #          (installed by this script).
 
@@ -25,8 +34,15 @@ remove() {
 		uci -q delete "firewall.$s" || true
 	done
 	uci commit firewall
-	rm -f /etc/nftables.d/20-acer-p2p.nft /etc/init.d/acer-p2p /usr/sbin/acer-p2p /www/p2p.json
+	rm -f /etc/nftables.d/20-acer-p2p.nft /etc/init.d/acer-p2p /usr/sbin/acer-p2p /www/p2p.json \
+		/usr/sbin/acer-p2p-mode /www/cgi-bin/p2p-mode /etc/acer-p2p.mode
 	fw4 -q reload
+	# the beacon goes back to the network path only
+	if [ -f /etc/mice-beacon.conf ]; then
+		. /etc/mice-beacon.conf
+		P2P_ADDR= ONLY_P2P=0 sh /root/mice-beacon.sh "$NAME" "$IP" 6 >/dev/null
+	fi
+	sh /root/beacon-status.sh 2>/dev/null || true
 }
 
 if [ "${REMOVE:-0}" = "1" ]; then
@@ -37,6 +53,9 @@ fi
 
 [ -n "$RECEIVER" ] || { echo "usage: RECEIVER=<receiver-ip> sh install-p2p.sh" >&2; exit 1; }
 . /etc/mice-beacon.conf    # NAME, IP of the beacon
+MODE="${MODE:-$(cat /etc/acer-p2p.mode 2>/dev/null || true)}"
+MODE="${MODE:-fallback}"
+case "$MODE" in off|fallback|only) ;; *) echo "MODE must be off, fallback or only" >&2; exit 1 ;; esac
 BOX="$(ip -4 -o addr show br-lan | awk '{print $4}' | cut -d/ -f1)"
 
 # ---- packages ---------------------------------------------------------------------------------
@@ -228,13 +247,76 @@ chain acer_p2p_keepopen {
 EOF
 fw4 -q reload
 
-/etc/init.d/acer-p2p enable
-/etc/init.d/acer-p2p restart
+# ---- switching the mode ---------------------------------------------------------------------------
+cat > /usr/sbin/acer-p2p-mode <<EOF
+#!/bin/sh
+# acer-p2p-mode [off|fallback|only] - switch Wi-Fi Direct (installed by install-p2p.sh);
+# without an argument it prints the current mode
+MAC=$P2PMAC
+EOF
+cat >> /usr/sbin/acer-p2p-mode <<'EOF'
+MODE_FILE=/etc/acer-p2p.mode
+BUSY=/tmp/acer-p2p-mode.busy
+if [ -z "$1" ]; then
+	cat "$MODE_FILE" 2>/dev/null || echo fallback
+	exit 0
+fi
+case "$1" in off|fallback|only) ;; *) echo "usage: acer-p2p-mode [off|fallback|only]" >&2; exit 1 ;; esac
+. /etc/mice-beacon.conf
+touch "$BUSY"
+echo "$1" > "$MODE_FILE"
+sh /root/beacon-status.sh 2>/dev/null
+if [ "$1" = off ]; then
+	/etc/init.d/acer-p2p stop
+	/etc/init.d/acer-p2p disable
+	ADDR=""; ONLY=0
+else
+	/etc/init.d/acer-p2p enable
+	/etc/init.d/acer-p2p start
+	ADDR="$MAC"; ONLY=0
+	[ "$1" = only ] && ONLY=1
+fi
+# the beacon: whom Windows is told about (mice-beacon.sh ends with a log read that can hang)
+T=""; command -v timeout >/dev/null && T="timeout 90"
+P2P_ADDR="$ADDR" ONLY_P2P="$ONLY" $T sh /root/mice-beacon.sh "$NAME" "$IP" 6 >/dev/null 2>&1
+rm -f "$BUSY"
+sh /root/beacon-status.sh 2>/dev/null
+logger -t acer-p2p "mode $1"
+EOF
+chmod 755 /usr/sbin/acer-p2p-mode
 
-# the beacon names the P2P device, so Windows falls back to it
-P2P_ADDR="$P2PMAC" sh /root/mice-beacon.sh "$NAME" "$IP" 6 >/dev/null
+# web hook for the receiver's panel: GET reads the mode, POST (body off|fallback|only) switches
+# it in the background (takes about 20 s); only the receiver's address may switch
+cat > /www/cgi-bin/p2p-mode <<EOF
+#!/bin/sh
+RECEIVER=$RECEIVER
+EOF
+cat >> /www/cgi-bin/p2p-mode <<'EOF'
+printf 'Content-Type: application/json\r\n\r\n'
+BUSY=false; [ -f /tmp/acer-p2p-mode.busy ] && BUSY=true
+if [ "$REQUEST_METHOD" = "POST" ]; then
+	[ "$REMOTE_ADDR" = "$RECEIVER" ] || { echo '{"ok":false,"error":"only the receiver may switch"}'; exit 0; }
+	[ "$BUSY" = false ] || { echo '{"ok":false,"error":"busy"}'; exit 0; }
+	[ "${CONTENT_LENGTH:-0}" -le 16 ] 2>/dev/null || { echo '{"ok":false,"error":"bad request"}'; exit 0; }
+	WANT="$(head -c "${CONTENT_LENGTH:-0}" | tr -dc 'a-z')"
+	case "$WANT" in
+		off|fallback|only) ;;
+		*) echo '{"ok":false,"error":"mode must be off, fallback or only"}'; exit 0 ;;
+	esac
+	touch /tmp/acer-p2p-mode.busy
+	( /usr/sbin/acer-p2p-mode "$WANT" </dev/null >/dev/null 2>&1 & )
+	echo "{\"ok\":true,\"mode\":\"$WANT\",\"busy\":true}"
+	exit 0
+fi
+echo "{\"ok\":true,\"mode\":\"$(/usr/sbin/acer-p2p-mode)\",\"busy\":$BUSY}"
+EOF
+chmod 755 /www/cgi-bin/p2p-mode
 
-sleep 12
+# the daemon script changed: restart it, then apply the mode (service and beacon)
+[ "$MODE" = off ] || /etc/init.d/acer-p2p restart
+/usr/sbin/acer-p2p-mode "$MODE"
+
+sleep 4
 echo "---- P2P interface"; iw dev "$IF" info | grep -E 'addr|type|ssid|channel'
 echo "---- status"; cat /tmp/p2p.json
-echo "---- log"; logread | grep -Ei 'acer-p2p|wpa_supplicant|P2P' | tail -n 15
+echo "---- mode"; /usr/sbin/acer-p2p-mode

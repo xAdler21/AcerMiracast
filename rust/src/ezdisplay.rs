@@ -135,6 +135,9 @@ pub enum Remote {
 
 enum Msg {
     Video(Vec<u8>, bool),
+    /// the source is still there but its picture has not changed (screen sharing sends no
+    /// frames for a still screen): keep the last picture instead of the standby picture
+    Alive,
     End,
     Remote(Remote, mpsc::Sender<Result<(), String>>),
 }
@@ -162,6 +165,10 @@ impl Output {
         if let Err(TrySendError::Full(_)) = self.tx.try_send(Msg::Video(unit, key)) {
             self.overflow.store(true, Ordering::Relaxed); // restart at the next key frame
         }
+    }
+
+    pub fn alive(&self) {
+        let _ = self.tx.try_send(Msg::Alive);
     }
 
     pub fn session_ended(&self) {
@@ -228,6 +235,11 @@ impl Worker {
                     self.in_session = true;
                     self.last_video = Instant::now();
                     self.send(unit, key, Mode::Live);
+                }
+                Ok(Msg::Alive) => {
+                    if self.in_session {
+                        self.last_video = Instant::now();
+                    }
                 }
                 Ok(Msg::End) => {
                     if let Some(c) = &self.conn {
