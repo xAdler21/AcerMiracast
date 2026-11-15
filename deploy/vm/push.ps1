@@ -9,8 +9,15 @@ $key = Join-Path $env:USERPROFILE '.ssh\claude_plintus_vm'
 $work = Join-Path $env:TEMP "acermiracast-push-$PID"
 New-Item -ItemType Directory -Force "$work\pkg" | Out-Null
 try {
-    $files = 'receiver\miracast_sink.py', 'receiver\mice_listen.py', 'receiver\panel.py', 'receiver\panel.html', 'receiver\ezdisplay.py',
-             'deploy\vm\install.sh', 'deploy\vm\acermiracast.service', 'deploy\vm\config.json'
+    # static Linux binary (musl, linked by rust-lld; see rust\.cargo\config.toml). The target
+    # directory lives on C: because build scripts may not run from the V: drive.
+    $env:CARGO_TARGET_DIR = 'C:\RE\AcerMiracast\cargo-target'
+    Push-Location (Join-Path $root 'rust')
+    # through cmd: PowerShell 5.1 with ErrorActionPreference Stop treats cargo's stderr as an error
+    try { cmd /c 'cargo build --release --target x86_64-unknown-linux-musl 2>&1' } finally { Pop-Location }
+    if ($LASTEXITCODE -ne 0) { throw 'cargo build failed' }
+    Copy-Item "$env:CARGO_TARGET_DIR\x86_64-unknown-linux-musl\release\acermiracast" "$work\pkg\acermiracast"
+    $files = 'deploy\vm\install.sh', 'deploy\vm\acermiracast.service', 'deploy\vm\config.json', 'VERSION'
     foreach ($f in $files) {
         # normalise to LF so the shell script and unit file work on Linux
         $text = [IO.File]::ReadAllText((Join-Path $root $f)).Replace("`r`n", "`n")

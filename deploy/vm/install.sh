@@ -12,26 +12,32 @@ cd "$(dirname "$0")"
 SUBNETS=("$@")
 [ ${#SUBNETS[@]} -gt 0 ] || SUBNETS=(10.21.0.0/24 192.168.2.0/24)
 
+# ffmpeg is optional: the panel preview and the fallback re-encoding use it; the projector
+# gets the source's H.264 directly.
 if ! command -v ffmpeg >/dev/null; then
 	echo "== ffmpeg fehlt, pruefe die Installation"
 	apt-get update -qq
 	PLAN="$(apt-get install -s --no-install-recommends ffmpeg)"
 	# Only brand-new packages are acceptable: no removals, no upgrades of what is installed.
 	if echo "$PLAN" | grep -Eq '^(Remv |Inst [^ ]+ \[)'; then
-		echo "ABBRUCH: ffmpeg wuerde vorhandene Pakete aendern oder entfernen:" >&2
-		echo "$PLAN" | grep -E '^(Remv |Inst [^ ]+ \[)' >&2
-		exit 1
+		echo "WARNUNG: ffmpeg wuerde vorhandene Pakete aendern, wird nicht installiert (keine Vorschau)" >&2
+	else
+		DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends ffmpeg
 	fi
-	echo "$PLAN" | grep -E '^[0-9]+ upgraded' || true
-	DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends ffmpeg
 fi
-ffmpeg -version | head -n 1
+command -v ffmpeg >/dev/null && ffmpeg -version | head -n 1
 
 id acermiracast >/dev/null 2>&1 || useradd --system --home-dir /var/lib/acermiracast \
 	--no-create-home --shell /usr/sbin/nologin acermiracast
 
 install -d -m 755 /opt/acermiracast /etc/acermiracast
-install -m 644 miracast_sink.py mice_listen.py panel.py panel.html ezdisplay.py /opt/acermiracast/
+install -m 755 acermiracast /opt/acermiracast/acermiracast
+# files of the former Python version
+rm -f /opt/acermiracast/miracast_sink.py /opt/acermiracast/mice_listen.py /opt/acermiracast/panel.py \
+	/opt/acermiracast/panel.html /opt/acermiracast/ezdisplay.py
+rm -rf /opt/acermiracast/__pycache__
+# installed version, read by the Plintus hub (updates)
+if [ -f VERSION ]; then install -m 644 VERSION /opt/acermiracast/VERSION; fi
 if [ ! -f /etc/acermiracast/config.json ]; then
 	install -m 644 config.json /etc/acermiracast/config.json
 	echo "== neue Konfiguration /etc/acermiracast/config.json"

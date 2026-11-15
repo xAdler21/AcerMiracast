@@ -17,6 +17,7 @@ Needs only the Python standard library plus an `ffmpeg` binary on PATH (unless -
 import argparse
 import datetime
 import json
+import os
 import shutil
 import socket
 import struct
@@ -74,6 +75,14 @@ class FrameHub:
             except Exception as exc:  # an output must never kill the session
                 log("output %s failed: %s" % (type(out).__name__, exc))
 
+    def publish_video(self, unit):
+        """One H.264 access unit for outputs that take video instead of JPEG."""
+        for out in self.outputs:
+            try:
+                out.send_video(unit)
+            except Exception as exc:
+                log("output %s failed: %s" % (type(out).__name__, exc))
+
     def clear(self):
         with self._cond:
             self._frame = None
@@ -95,22 +104,73 @@ class FrameHub:
 # ---- decoder: MPEG-TS in, JPEG frames out ------------------------------------------------------
 
 class Decoder:
-    def __init__(self, hub, fps, width, quality, height=0):
-        vf = "fps=%d" % fps
-        if width and height:      # exact size, letterboxed
-            vf += (",scale=%d:%d:force_original_aspect_ratio=decrease,pad=%d:%d:(ow-iw)/2:(oh-ih)/2"
-                   % (width, height, width, height))
-        elif width:
-            vf += ",scale=%d:-2" % width
-        vf += ",format=yuvj420p"  # plain baseline 4:2:0 JPEG
+    """ffmpeg: MPEG-TS in; JPEG frames out (panel), optionally also H.264 (projector).
+
+    video = (width, height, fps) adds a second output: H.264 baseline in exactly that size,
+    one access unit per frame, SPS/PPS repeated at every key frame (one per second).
+    """
+
+    def __init__(self, hub, fps, width, quality, video=None):
+        jpeg = "fps=%d" % fps
+        if width:
+            jpeg += ",scale=%d:-2" % width
+        jpeg += ",format=yuvj420p"
         cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error",
                "-fflags", "nobuffer", "-flags", "low_delay", "-probesize", "200000",
-               "-analyzeduration", "500000", "-f", "mpegts", "-i", "pipe:0",
-               "-an", "-vf", vf, "-q:v", str(quality), "-f", "mjpeg", "pipe:1"]
+               "-analyzeduration", "500000", "-f", "mpegts", "-i", "pipe:0", "-an"]
+        pass_fds = ()
+        video_read = None
+        if video:
+            vw, vh, vfps = video
+            video_read, video_write = os.pipe()
+            pass_fds = (video_write,)
+            h264 = ("fps=%d,scale=%d:%d:force_original_aspect_ratio=decrease,"
+                    "pad=%d:%d:(ow-iw)/2:(oh-ih)/2,format=yuv420p" % (vfps, vw, vh, vw, vh))
+            cmd += ["-filter_complex", "[0:v]split=2[a][b];[a]%s[j];[b]%s[v]" % (jpeg, h264),
+                    "-map", "[j]", "-q:v", str(quality), "-f", "mjpeg", "pipe:1",
+                    "-map", "[v]", "-c:v", "libx264", "-profile:v", "baseline", "-level", "3.1",
+                    "-preset", "ultrafast", "-tune", "zerolatency", "-g", str(vfps), "-bf", "0",
+                    "-b:v", "3M", "-maxrate", "4M", "-bufsize", "2M",
+                    "-x264-params", "aud=1:repeat-headers=1",
+                    "-f", "h264", "pipe:%d" % video_write]
+        else:
+            cmd += ["-vf", jpeg, "-q:v", str(quality), "-f", "mjpeg", "pipe:1"]
         self.hub = hub
-        self.proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+        self.proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                     pass_fds=pass_fds)
         self.frames = 0
+        self.video_frames = 0
         threading.Thread(target=self._read, daemon=True).start()
+        if video:
+            os.close(video_write)
+            threading.Thread(target=self._read_video, args=(video_read,), daemon=True).start()
+
+    def _read_video(self, fd):
+        """Split ffmpeg's H.264 stream into access units at the delimiter NAL (type 9)."""
+        marker = b"\x00\x00\x00\x01\x09"
+        buf = b""
+        with os.fdopen(fd, "rb", buffering=0) as stream:
+            while True:
+                chunk = stream.read(65536)
+                if not chunk:
+                    break
+                buf += chunk
+                while True:
+                    end = buf.find(marker, 5)
+                    if end < 0:
+                        break
+                    unit, buf = buf[:end], buf[end:]
+                    self._publish_unit(unit)
+
+    def _publish_unit(self, unit):
+        if not unit.startswith(b"\x00\x00\x00\x01\x09"):
+            return
+        start = unit.find(b"\x00\x00\x01", 5)            # first NAL after the delimiter
+        if start < 0:
+            return
+        body = unit[start - 1:] if unit[start - 1] == 0 else b"\x00" + unit[start:]
+        self.video_frames += 1
+        self.hub.publish_video(body)
 
     def feed(self, data):
         try:
@@ -325,7 +385,7 @@ class Session:
         dump = None
         if not self.args.no_decode:
             decoder = self.decoder = Decoder(self.hub, self.args.fps, self.args.width, self.args.quality,
-                                             getattr(self.args, "height", 0))
+                                             getattr(self.args, "video", None))
             sinks.append(decoder.feed)
         if self.args.dump_ts:
             dump = open(self.args.dump_ts, "wb")
@@ -511,16 +571,17 @@ def main():
 
     hub = FrameHub()
     if config.get("picture_output") == "ezdisplay" and config.get("projector_host"):
-        # the projector wants pictures in exactly its own size
-        args.width = int(config.get("picture_width", 1920))
-        args.height = int(config.get("picture_height", 1080))
+        # the projector takes H.264 in exactly the size it announces (1280x720 on the Acer P5)
+        vw, vh = int(config.get("video_width", 1280)), int(config.get("video_height", 720))
+        args.video = (vw, vh, int(config.get("video_fps", 30)))
+        args.width = args.width or 960      # the panel preview does not need full size
         host = config["projector_host"]
         prepare = None
         if config.get("projector_control", "acer_web") == "acer_web":
             prepare = lambda: panel.acer_post(host, "/form/control_cgi", "src=33")   # LAN/WiFi input
         hub.outputs.append(ezdisplay.EZDisplayOutput(
-            host, args.width, args.height, config.get("room_name", "Plintus"), prepare))
-        log("pictures go to the projector %s as %dx%d" % (host, args.width, args.height))
+            host, vw, vh, config.get("room_name", "Plintus"), prepare))
+        log("video goes to the projector %s as H.264 %dx%d" % (host, vw, vh))
 
     sink = Sink(args, hub)
     if args.http_port:

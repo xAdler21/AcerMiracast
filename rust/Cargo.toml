@@ -1,0 +1,17 @@
+[package]
+name = "acermiracast"
+version = "0.2.0"
+edition = "2024"
+description = "Win+K (Miracast over infrastructure) receiver that forwards the picture to an Acer / EZCast Pro projector, with a web panel"
+
+[dependencies]
+aes = "0.8"
+base64 = "0.22"
+cbc = { version = "0.1", features = ["alloc"] }
+serde_json = "1.0.154"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true

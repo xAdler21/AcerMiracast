@@ -6,3 +6,5 @@ re/acer-edisplay/captures/
 *.rep/
 *.i64
 *.idb
+__pycache__/
+rust/target/

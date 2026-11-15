@@ -7,10 +7,9 @@ Wants=network-online.target
 User=acermiracast
 Group=acermiracast
 WorkingDirectory=/opt/acermiracast
-ExecStart=/usr/bin/python3 -u /opt/acermiracast/miracast_sink.py --config /etc/acermiracast/config.json
+ExecStart=/opt/acermiracast/acermiracast --config /etc/acermiracast/config.json
 Restart=always
 RestartSec=3
-Environment=PYTHONDONTWRITEBYTECODE=1
 
 NoNewPrivileges=true
 CapabilityBoundingSet=

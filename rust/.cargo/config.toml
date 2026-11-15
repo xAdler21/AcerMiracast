@@ -1,0 +1,5 @@
+# Static Linux binary for the VM, built on Windows: rust-lld links against the musl
+# that ships with the Rust target, so no C toolchain is needed.
+[target.x86_64-unknown-linux-musl]
+linker = "rust-lld"
+rustflags = ["-C", "linker-flavor=ld.lld", "-C", "target-feature=+crt-static"]

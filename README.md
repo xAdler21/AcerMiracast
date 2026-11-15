@@ -1,56 +1,72 @@
 # AcerMiracast
 
-Project a Windows screen with **Win+K** onto a projector that has no Miracast of its own, and
-control that projector from a web panel.
+Project a Windows screen with **Win+K** onto an Acer / EZCast Pro projector that has no Miracast
+of its own, and control that projector from a web panel.
 
 | Part | Where | What it does |
 |---|---|---|
-| `beacon/` | OpenWrt box (FRITZ!Box 4020) | Sends the Wi-Fi beacon that makes the room show up in Win+K, and publishes its state as `http://<box>/beacon.json`. |
-| `receiver/miracast_sink.py` | VM | Accepts the connection (TCP 7250), negotiates the stream (RTSP), decodes it with ffmpeg to JPEG frames. |
-| `receiver/panel.py`, `panel.html` | VM | Web panel on port 8445: projector status and control (PJLink), beacon and session status, live picture. |
-| projector picture output | VM | Sends the frames to the projector. **Not built yet** - the projector protocol is not verified. |
+| `beacon/` | OpenWrt box (FRITZ!Box 4020) | Sends the Wi-Fi beacon that makes the room show up in Win+K, publishes its state as `http://<box>/beacon.json`, wakes the projector (Wake-on-LAN CGI). |
+| `rust/` | VM | One static binary `acermiracast`: Win+K receiver (MICE TCP 7250, RTSP, RTP), picture output to the projector, web panel on port 8445. |
+| `receiver/` | - | Former Python version, kept for reference; no longer deployed. |
 
-## Beacon
+## How the picture gets to the projector
+
+1. Win+K: Windows connects to TCP 7250 (MS-MICE), the receiver negotiates Wi-Fi Display (RTSP)
+   and asks for **H.264 Constrained Baseline 1280x720p30** - exactly what the projector plays.
+2. The H.264 is taken out of the RTP/MPEG-TS stream and forwarded unchanged (no re-encoding).
+   If a source insists on another format, ffmpeg re-encodes it (`video_mode` `transcode` forces that).
+3. To the projector (protocol rebuilt from a capture and the Acer eDisplay Pro software):
+   - control channel TCP 63630: JSON-RPC, AES-128-CBC; `common.request_stream` must be answered
+     with `"allow"` (`rust/src/control.rs`)
+   - UDP 2425: greeting and mirror request; TCP 2425: hello, stream request, heartbeat, one
+     H.264 access unit per message (`rust/src/ezdisplay.rs`)
+4. A low-rate JPEG preview for the panel comes from ffmpeg (optional).
+
+## Build and deploy
+
+Needs Rust with the target `x86_64-unknown-linux-musl` (`rustup target add x86_64-unknown-linux-musl`);
+linking uses the bundled `rust-lld`, no C toolchain. Build output goes to `C:\RE\AcerMiracast\cargo-target`.
 
 ```powershell
-.\beacon\deploy.ps1 -ReceiverIp 10.21.0.232 -Name Plintus -DryRun   # show what would be set
-.\beacon\deploy.ps1 -ReceiverIp 10.21.0.232 -Name Plintus           # switch it on
+.\deploy\vm\push.ps1        # build, copy and install on the VM in one SSH session
 ```
 
-Uses the SSH key `~/.ssh/claude_fritzbox_beacon`. The setting survives a reboot.
-Switch off on the box with `REMOVE=1 sh /root/mice-beacon.sh`.
+`install.sh` installs to `/opt/acermiracast`, runs as user `acermiracast` (`acermiracast.service`),
+installs ffmpeg only if that changes no existing package, and opens the ports in ufw.
 
-## Receiver and panel on the VM
-
-```powershell
-.\deploy\vm\push.ps1
-```
-
-Packs the receiver and runs `deploy/vm/install.sh` on the VM in one SSH session. It installs to
-`/opt/acermiracast`, runs as user `acermiracast` (`acermiracast.service`), installs ffmpeg only
-if that changes no existing package, and opens the ports in ufw.
-
-Settings are in `/etc/acermiracast/config.json` (kept on update); restart the service after a change:
+Settings in `/etc/acermiracast/config.json` (kept on update, new keys are added):
 
 | Key | Meaning |
 |---|---|
-| `room_name` | name shown in the panel hint |
-| `projector_host` | IP of the projector (PJLink, TCP 4352); empty = not set up |
-| `projector_password` | PJLink password, if the projector asks for one |
+| `room_name` | name sent to the projector and shown in the panel |
+| `projector_host` | IP of the projector |
+| `projector_control` | `acer_web`: switch to the LAN/WiFi input and show status via the projector's web page |
+| `wake_url` | Wake-on-LAN CGI on the box (projector off = not on the network) |
+| `video_mode` | `passthrough` (default) or `transcode` |
+| `video_width`, `video_height`, `video_fps` | picture the projector takes (1280x720x30 on the Acer P5) |
 | `beacon_host` | IP of the beacon box |
 
 Ports: TCP 8445 (panel), TCP 7250 and UDP 50000 (from the Windows device); the receiver connects
-out to the Windows device on TCP 7236. The Windows device need not be in the same subnet, but
-these connections must be allowed.
+out to the Windows device on TCP 7236 and to the projector on TCP 63630, 2425 and UDP 2425.
 
-Panel for the Plintus app: enter `http://10.21.0.232:8445/` in the hub under Einstellungen -> Beamer.
+Panel for the Plintus app: `http://10.21.0.232:8445/` in the hub under Einstellungen -> Beamer.
+
+## Updates through the Plintus hub
+
+```powershell
+.\deploy\build-release.ps1 -Bump   # raise VERSION, build release/acermiracast.tar.gz + release/latest.json
+```
+
+Commit and push `VERSION` and `release/`; the hub shows the update under Updates -> Beamer.
+The unit file is not changed by hub updates: the switch from the Python version to the binary
+needs `push.ps1` once.
 
 ## Tests
 
-```sh
-python3 receiver/mice_listen.py --selftest
-python3 receiver/miracast_sink.py --no-decode --http-port 0 --bind 127.0.0.1 &
-python3 receiver/fake_source.py --sink 127.0.0.1 [--ts video.ts]
+```powershell
+cd rust
+cargo test                                    # protocol bytes checked against the capture
+cargo run --release --example fake_projector  # stand-in projector on 127.0.0.1
+cargo run --release -- --config test.json --bind 127.0.0.1 --no-preview   # projector_host 127.0.0.1
+py -I testing\fake_source.py                  # stand-in Windows source with synthetic H.264
 ```
-
-`fake_source.py` plays the Windows side of the whole protocol. Not yet tested against real Windows.
