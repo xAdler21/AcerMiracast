@@ -181,11 +181,15 @@ panel without a preflight, which the panel never answers.
 
 ## Updates through the Plintus hub
 
+Raise `VERSION` and push to `main`: GitHub Actions (`.github/workflows/release.yml`) runs the
+tests, builds the static binary and publishes release `v<version>` with `acermiracast.tar.gz` and
+`latest.json`, always also at `https://github.com/xAdler21/AcerMiracast/releases/latest/download/<name>`.
+A push without a new `VERSION` builds nothing. The hub shows the update under Updates -> Beamer.
+
 ```powershell
-.\deploy\build-release.ps1 -Bump   # raise VERSION, build release/acermiracast.tar.gz + release/latest.json
+.\deploy\build-release.ps1 -Bump   # optional local test package in C:\RE\AcerMiracast\dist
 ```
 
-Commit and push `VERSION` and `release/`; the hub shows the update under Updates -> Beamer.
 The unit file is not changed by hub updates: the switch from the Python version to the binary
 needs `push.ps1` once.
 

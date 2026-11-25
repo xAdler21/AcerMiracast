@@ -1,0 +1,93 @@
+# Builds the release package on every push to main whose VERSION has no GitHub release yet:
+# bump VERSION, push, done.
+#
+# Release v<version> gets two assets with fixed names, so the newest one is always at
+# .../releases/latest/download/<name>:
+#   acermiracast.tar.gz   program (static musl binary, panel built in), installer, unit, defaults
+#   latest.json           {name, version, file, folder, sha256, size, built, install}
+
+name: Release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Version
+        id: version
+        run: |
+          version=$(tr -d '[:space:]' < VERSION)
+          if ! [[ "$version" =~ ^[A-Za-z0-9][A-Za-z0-9.+~_-]{0,63}$ ]]; then
+            echo "invalid version '$version'" >&2; exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if gh release view "v$version" >/dev/null 2>&1; then
+            echo "Release v$version exists – nothing to do"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Toolchain
+        if: steps.version.outputs.skip != 'true'
+        run: rustup target add x86_64-unknown-linux-musl   # linked by rust-lld, see rust/.cargo/config.toml
+
+      - uses: Swatinem/rust-cache@v2
+        if: steps.version.outputs.skip != 'true'
+        with:
+          workspaces: rust
+
+      - name: Test
+        if: steps.version.outputs.skip != 'true'
+        working-directory: rust
+        run: cargo test
+
+      - name: Build
+        if: steps.version.outputs.skip != 'true'
+        working-directory: rust
+        run: cargo build --release --target x86_64-unknown-linux-musl
+
+      - name: Package
+        if: steps.version.outputs.skip != 'true'
+        run: |
+          version=${{ steps.version.outputs.version }}
+          name=acermiracast-$version
+          file=acermiracast.tar.gz
+          mkdir -p "dist/$name"
+          install -m 755 rust/target/x86_64-unknown-linux-musl/release/acermiracast "dist/$name/acermiracast"
+          cp deploy/vm/install.sh deploy/vm/acermiracast.service deploy/vm/config.json VERSION "dist/$name/"
+          sed -i 's/\r$//' "dist/$name/install.sh" "dist/$name/acermiracast.service"
+          tar -C dist -czf "dist/$file" "$name"
+          cat > dist/latest.json <<EOF
+          {
+            "name": "acermiracast",
+            "version": "$version",
+            "file": "$file",
+            "folder": "$name",
+            "sha256": "$(sha256sum "dist/$file" | cut -d' ' -f1)",
+            "size": $(stat -c %s "dist/$file"),
+            "built": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+            "install": "sudo bash install.sh"
+          }
+          EOF
+          cat dist/latest.json
+
+      - name: Publish
+        if: steps.version.outputs.skip != 'true'
+        run: |
+          version=${{ steps.version.outputs.version }}
+          gh release create "v$version" dist/acermiracast.tar.gz dist/latest.json \
+            --target "$GITHUB_SHA" --title "AcerMiracast $version" --generate-notes --latest

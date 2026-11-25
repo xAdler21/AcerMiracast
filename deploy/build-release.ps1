@@ -1,7 +1,7 @@
-# Build the release the Plintus hub installs: release/acermiracast.tar.gz and release/latest.json.
+# Build a local test package: acermiracast.tar.gz and latest.json in C:\RE\AcerMiracast\dist.
+# Releases are built by GitHub Actions (.github/workflows/release.yml) on a push with a new VERSION.
 # Usage: .\deploy\build-release.ps1            (version from VERSION)
 #        .\deploy\build-release.ps1 -Bump      (raise the last number in VERSION first)
-# Commit and push release/ afterwards; the hub finds the new version under Updates.
 param([switch]$Bump)
 $ErrorActionPreference = 'Stop'
 $root = Resolve-Path (Join-Path $PSScriptRoot '..')
@@ -21,7 +21,7 @@ if ($version -notmatch '^[A-Za-z0-9][A-Za-z0-9.+~_-]{0,63}$') { throw "invalid v
 $files = 'deploy\vm\install.sh', 'deploy\vm\acermiracast.service', 'deploy\vm\config.json', 'VERSION'
 $top = "acermiracast-$version"
 $work = Join-Path $env:TEMP "acermiracast-release-$PID"
-$release = Join-Path $root 'release'
+$release = 'C:\RE\AcerMiracast\dist'
 New-Item -ItemType Directory -Force (Join-Path $work $top), $release | Out-Null
 try {
     $env:CARGO_TARGET_DIR = 'C:\RE\AcerMiracast\cargo-target'
@@ -51,8 +51,8 @@ try {
     }
     $json = ($manifest | ConvertTo-Json) + "`n"
     [IO.File]::WriteAllText((Join-Path $release 'latest.json'), $json, (New-Object Text.UTF8Encoding $false))
-    Write-Host "release\acermiracast.tar.gz ($version, $($item.Length) bytes)"
-    Write-Host 'Now commit and push release\ (and VERSION); the hub shows the update under Updates.'
+    Write-Host "$package ($version, $($item.Length) bytes)"
+    Write-Host 'For a release: commit and push VERSION, GitHub Actions publishes v<version>.'
 } finally {
     Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue
 }
